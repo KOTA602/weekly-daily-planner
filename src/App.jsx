@@ -5,6 +5,7 @@ const EVENT_STORAGE_KEY = 'wdp_events_v1'
 const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
 const REMINDER_FIRED_STORAGE_KEY = 'wdp_reminders_fired_v1'
+const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
 const SHARED_MEMO_KEY = '__shared_memo__'
 const GOOGLE_EVENT_SOURCE = 'google-calendar'
@@ -12,6 +13,7 @@ const GOOGLE_DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calen
 const GOOGLE_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
 const GOOGLE_SCOPES = GOOGLE_EVENTS_SCOPE
 const GOOGLE_TIME_ZONE = 'Asia/Tokyo'
+const GOOGLE_EVENTS_URL = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
 const GOOGLE_CONFIG = {
   clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
   apiKey: import.meta.env.VITE_GOOGLE_API_KEY || ''
@@ -58,7 +60,7 @@ const TIME_LABELS = HOURS.map(hour => {
   return `${String(hour).padStart(2, '0')}:00`
 })
 const ROW_HEIGHT = 23 // px per hour
-const STEP_MINUTES = 5
+const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
 const GRID_START_MINUTES = 5 * 60
 const GRID_END_MINUTES = 24 * 60
@@ -74,6 +76,7 @@ const EVENT_REMINDER_CHOICES = [
   { value: 5, label: '5分前' }
 ]
 const REMINDER_GRACE_MS = 90 * 1000
+const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -133,6 +136,13 @@ function normalizeEventTimeRange(startTime, endTime) {
   }
 }
 
+function normalizePlannerEvent(event) {
+  return {
+    ...event,
+    ...normalizeEventTimeRange(event.startTime || '05:00', event.endTime || '06:00')
+  }
+}
+
 function googleDateTime(dateISO, time) {
   const [year, month, day] = dateISO.split('-').map(Number)
   let [hour, minute] = time.split(':').map(Number)
@@ -153,21 +163,171 @@ function googleDateTime(dateISO, time) {
   return `${datePart}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+09:00`
 }
 
+function googleDateTimeParts(dateTime) {
+  const date = new Date(dateTime)
+  if (Number.isNaN(date.getTime())) return null
+
+  const formatter = new Intl.DateTimeFormat('ja-JP', {
+    timeZone: GOOGLE_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  })
+  const parts = Object.fromEntries(formatter.formatToParts(date).map(part => [part.type, part.value]))
+
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`
+  }
+}
+
 function eventToGoogleCalendarPayload(event) {
+  const normalizedTimes = normalizeEventTimeRange(event.startTime, event.endTime)
+
   return {
     summary: event.title,
     start: {
-      dateTime: googleDateTime(event.date, event.startTime),
+      dateTime: googleDateTime(event.date, normalizedTimes.startTime),
       timeZone: GOOGLE_TIME_ZONE
     },
     end: {
-      dateTime: googleDateTime(event.date, event.endTime),
+      dateTime: googleDateTime(event.date, normalizedTimes.endTime),
       timeZone: GOOGLE_TIME_ZONE
     },
     reminders: {
       useDefault: true
     }
   }
+}
+
+function hasGoogleEventsScope(tokenResponse) {
+  if (!tokenResponse || !window.google?.accounts?.oauth2) return false
+  return window.google.accounts.oauth2.hasGrantedAllScopes(tokenResponse, GOOGLE_EVENTS_SCOPE)
+}
+
+async function readGoogleCalendarResponse(response) {
+  if (response.status === 204) return null
+
+  const text = await response.text()
+  if (!text) return null
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+function googleCalendarApiError(response, responseBody, fallbackMessage) {
+  const error = new Error(responseBody?.error?.message || fallbackMessage)
+  error.status = response.status
+  error.response = responseBody
+  return error
+}
+
+async function insertGoogleCalendarEvent(event, accessToken) {
+  const normalizedEvent = normalizePlannerEvent(event)
+  const googleEventBody = eventToGoogleCalendarPayload(normalizedEvent)
+  console.log('creating google event', normalizedEvent)
+  console.log('sending event to Google Calendar', googleEventBody)
+
+  const response = await fetch(GOOGLE_EVENTS_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(googleEventBody)
+  })
+  const responseBody = await readGoogleCalendarResponse(response)
+
+  console.log('Google Calendar insert response', responseBody)
+  console.log('Google events.insert response', responseBody)
+
+  if (!response.ok) {
+    throw googleCalendarApiError(response, responseBody, 'Google Calendar insert failed')
+  }
+
+  return responseBody
+}
+
+async function listGoogleCalendarEvents({ timeMin, timeMax }, accessToken) {
+  const params = new URLSearchParams({
+    timeMin,
+    timeMax,
+    timeZone: GOOGLE_TIME_ZONE,
+    showDeleted: 'false',
+    singleEvents: 'true',
+    maxResults: '250',
+    orderBy: 'startTime'
+  })
+  console.log('loading google events', { timeMin, timeMax })
+
+  const response = await fetch(`${GOOGLE_EVENTS_URL}?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  })
+  const responseBody = await readGoogleCalendarResponse(response)
+
+  console.log('Google events.list response', responseBody)
+
+  if (!response.ok) {
+    throw googleCalendarApiError(response, responseBody, 'Google Calendar list failed')
+  }
+
+  return responseBody || {}
+}
+
+async function updateGoogleCalendarEvent(event, accessToken) {
+  const googleEventId = event.googleEventId
+  console.log('updating google event', googleEventId)
+
+  const response = await fetch(`${GOOGLE_EVENTS_URL}/${encodeURIComponent(googleEventId)}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(eventToGoogleCalendarPayload(event))
+  })
+  const responseBody = await readGoogleCalendarResponse(response)
+
+  console.log('Google events.patch response', responseBody)
+
+  if (!response.ok) {
+    throw googleCalendarApiError(response, responseBody, 'Google Calendar update failed')
+  }
+
+  return responseBody
+}
+
+async function deleteGoogleCalendarEvent(googleEventId, accessToken) {
+  console.log('deleting google event', googleEventId)
+
+  const response = await fetch(`${GOOGLE_EVENTS_URL}/${encodeURIComponent(googleEventId)}`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  })
+  const responseBody = await readGoogleCalendarResponse(response)
+
+  console.log('Google events.delete response', {
+    ok: response.ok,
+    status: response.status,
+    body: responseBody
+  })
+
+  if (!response.ok) {
+    throw googleCalendarApiError(response, responseBody, 'Google Calendar delete failed')
+  }
+
+  return responseBody
 }
 
 function loadScript(src, id) {
@@ -197,38 +357,23 @@ function loadScript(src, id) {
   })
 }
 
-function minutesFromDate(date) {
-  return date.getHours() * 60 + date.getMinutes()
-}
-
 function normalizeGoogleEvent(item) {
   const googleEventId = item.id || item.etag
   const summary = item.summary || '無題の予定'
   const isAllDay = Boolean(item.start?.date)
 
-  if (!googleEventId) return null
+  if (!googleEventId || isAllDay) return null
 
-  if (isAllDay) {
-    return {
-      id: `${GOOGLE_EVENT_SOURCE}-${googleEventId}`,
-      googleEventId,
-      source: GOOGLE_EVENT_SOURCE,
-      htmlLink: item.htmlLink || '',
-      title: `終日: ${summary}`,
-      date: item.start.date,
-      startTime: '05:00',
-      endTime: '06:00'
-    }
+  const start = item.start?.dateTime ? googleDateTimeParts(item.start.dateTime) : null
+  const end = item.end?.dateTime ? googleDateTimeParts(item.end.dateTime) : null
+  if (!start || !end) return null
+
+  let endTime = end.time
+  if (end.date !== start.date) {
+    endTime = '24:00'
   }
 
-  const start = item.start?.dateTime ? new Date(item.start.dateTime) : null
-  if (!start || Number.isNaN(start.getTime())) return null
-
-  const end = item.end?.dateTime ? new Date(item.end.dateTime) : new Date(start.getTime() + 60 * 60 * 1000)
-  const sameDay = end.toDateString() === start.toDateString()
-  const startMinutes = clamp(minutesFromDate(start), GRID_START_MINUTES, GRID_END_MINUTES - 5)
-  const rawEndMinutes = sameDay ? minutesFromDate(end) : GRID_END_MINUTES
-  const endMinutes = clamp(rawEndMinutes, startMinutes + 5, GRID_END_MINUTES)
+  const normalizedTimes = normalizeEventTimeRange(start.time, endTime)
 
   return {
     id: `${GOOGLE_EVENT_SOURCE}-${googleEventId}`,
@@ -236,10 +381,70 @@ function normalizeGoogleEvent(item) {
     source: GOOGLE_EVENT_SOURCE,
     htmlLink: item.htmlLink || '',
     title: summary,
-    date: formatISO(start),
-    startTime: minutesToTime(startMinutes),
-    endTime: minutesToTime(endMinutes)
+    date: start.date,
+    startTime: normalizedTimes.startTime,
+    endTime: normalizedTimes.endTime
   }
+}
+
+function eventSyncSignature(event) {
+  const normalizedTimes = normalizeEventTimeRange(event.startTime, event.endTime)
+
+  return [
+    event.title?.trim() || '',
+    event.date,
+    normalizedTimes.startTime,
+    normalizedTimes.endTime
+  ].join('|')
+}
+
+function mergeGoogleImportedEvents(localEvents, importedEvents, weekDateSet) {
+  const importedByGoogleId = new Map()
+  const importedBySignature = new Map()
+  importedEvents.forEach(event => {
+    if (event.googleEventId) {
+      importedByGoogleId.set(event.googleEventId, event)
+    }
+    importedBySignature.set(eventSyncSignature(event), event)
+  })
+
+  const consumedGoogleIds = new Set()
+  const mergedEvents = []
+
+  localEvents.forEach(event => {
+    const imported = event.googleEventId ? importedByGoogleId.get(event.googleEventId) : null
+    const matchingImported = event.googleEventId ? null : importedBySignature.get(eventSyncSignature(event))
+    const matchedImported = imported || matchingImported
+
+    if (matchedImported) {
+      if (consumedGoogleIds.has(matchedImported.googleEventId)) return
+
+      consumedGoogleIds.add(matchedImported.googleEventId)
+      mergedEvents.push({
+        ...event,
+        ...matchedImported,
+        id: event.id,
+        source: event.source,
+        googleHtmlLink: matchedImported.htmlLink || event.googleHtmlLink || ''
+      })
+      return
+    }
+
+    if (event.source === GOOGLE_EVENT_SOURCE && weekDateSet.has(event.date)) {
+      return
+    }
+
+    mergedEvents.push(event)
+  })
+
+  importedEvents.forEach(event => {
+    if (!event.googleEventId || consumedGoogleIds.has(event.googleEventId)) return
+
+    consumedGoogleIds.add(event.googleEventId)
+    mergedEvents.push(event)
+  })
+
+  return mergedEvents
 }
 
 function createLocalId(prefix) {
@@ -307,7 +512,8 @@ function dayHeaderTone(date) {
 function defaultEvents() {
   try {
     const raw = localStorage.getItem(EVENT_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.map(normalizePlannerEvent) : []
   } catch {
     return []
   }
@@ -350,6 +556,14 @@ function defaultFiredReminders() {
   }
 }
 
+function defaultGoogleConnected() {
+  try {
+    return localStorage.getItem(GOOGLE_CONNECTED_STORAGE_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
 function saveEvents(events) {
   localStorage.setItem(EVENT_STORAGE_KEY, JSON.stringify(events))
 }
@@ -364,6 +578,18 @@ function saveMemos(memos) {
 
 function saveFiredReminders(reminders) {
   localStorage.setItem(REMINDER_FIRED_STORAGE_KEY, JSON.stringify(reminders))
+}
+
+function saveGoogleConnected(connected) {
+  localStorage.setItem(GOOGLE_CONNECTED_STORAGE_KEY, connected ? 'true' : 'false')
+}
+
+function formatClock(date) {
+  return date.toLocaleTimeString('ja-JP', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
 }
 
 function EventForm({ initial, onSave, onDelete, onCancel }) {
@@ -479,6 +705,14 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
 export default function App() {
   const googleConfigured = Boolean(GOOGLE_CONFIG.clientId)
   const googleTokenClient = useRef(null)
+  const googleAccessTokenRef = useRef('')
+  const googleConnectedRef = useRef(false)
+  const eventsRef = useRef([])
+  const dragUpdatedEventRef = useRef(null)
+  const pendingGoogleInsertIdsRef = useRef(new Set())
+  const updateGoogleEventRef = useRef(null)
+  const syncCurrentWeekWithGoogleRef = useRef(null)
+  const isSyncingRef = useRef(false)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -502,14 +736,16 @@ export default function App() {
     'Notification' in window ? window.Notification.permission : 'unsupported'
   ))
   const [googleReady, setGoogleReady] = useState(false)
-  const [googleConnected, setGoogleConnected] = useState(false)
+  const [googleConnected, setGoogleConnected] = useState(() => defaultGoogleConnected())
   const [googleStatus, setGoogleStatus] = useState(googleConfigured ? 'idle' : 'missing-config')
   const [googleMessage, setGoogleMessage] = useState(googleConfigured ? 'Google準備OK' : 'Google設定待ち')
+  const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
   useEffect(() => saveMemos(memos), [memos])
   useEffect(() => saveFiredReminders(firedReminders), [firedReminders])
+  useEffect(() => saveGoogleConnected(googleConnected), [googleConnected])
 
   const weekDates = useMemo(() => {
     const base = new Date(centerDate)
@@ -532,6 +768,14 @@ export default function App() {
   useEffect(() => {
     dragSelectionRef.current = dragSelection
   }, [dragSelection])
+
+  useEffect(() => {
+    googleConnectedRef.current = googleConnected
+  }, [googleConnected])
+
+  useEffect(() => {
+    eventsRef.current = events
+  }, [events])
 
   useEffect(() => {
     if (!dragSelection) return
@@ -644,15 +888,21 @@ export default function App() {
           newEnd = clamp(dragState.initialEnd + deltaMinutes, dragState.initialStart + STEP_MINUTES, GRID_END_MINUTES)
         }
 
-        return {
+        dragUpdatedEventRef.current = {
           ...ev,
           startTime: minutesToTime(newStart),
           endTime: minutesToTime(newEnd)
         }
+        return dragUpdatedEventRef.current
       }))
     }
 
     function handlePointerUp() {
+      const updatedEvent = dragUpdatedEventRef.current || eventsRef.current.find(item => item.id === dragState.eventId)
+      if (updatedEvent?.googleEventId) {
+        void updateGoogleEventRef.current?.(updatedEvent)
+      }
+      dragUpdatedEventRef.current = null
       setDragState(null)
     }
 
@@ -681,12 +931,23 @@ export default function App() {
 
     if (!isNewEvent) {
       setEvents(prev => prev.map(item => (item.id === ev.id ? normalizedEvent : item)))
+      if (normalizedEvent.googleEventId) {
+        void updateEventInGoogleCalendar(normalizedEvent)
+      }
     } else {
       const id = createLocalId('event')
       const localEvent = { ...normalizedEvent, id }
+      const token = window.gapi?.client?.getToken()
+      const accessToken = currentGoogleAccessToken()
+      const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+
+      console.log('planner event created', localEvent)
+      console.log('google connected', isGoogleConnected)
+      console.log('access token exists', Boolean(accessToken))
+
       setEvents(prev => [...prev, localEvent])
 
-      if (googleConnected) {
+      if (isGoogleConnected) {
         void addEventToGoogleCalendar(localEvent)
       }
     }
@@ -694,23 +955,53 @@ export default function App() {
   }
 
   function deleteEvent(id) {
+    const event = eventsRef.current.find(item => item.id === id)
     setEvents(prev => prev.filter(item => item.id !== id))
     setEditing(null)
+
+    if (event?.googleEventId) {
+      void deleteEventFromGoogleCalendar(event)
+    }
   }
 
   function openEdit(ev) {
     setEditing(ev)
   }
 
-  async function initializeGoogleCalendar() {
+  function currentGoogleAccessToken() {
+    return googleAccessTokenRef.current || window.gapi?.client?.getToken()?.access_token || ''
+  }
+
+  async function ensureGoogleAccessToken(options = {}) {
+    let token = window.gapi?.client?.getToken()
+    if (!hasGoogleEventsScope(token) || !currentGoogleAccessToken()) {
+      await requestGoogleAccess(options)
+      token = window.gapi?.client?.getToken()
+    }
+
+    const accessToken = currentGoogleAccessToken()
+    const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+    console.log('google connected', isGoogleConnected)
+    console.log('access token exists', Boolean(accessToken))
+
+    if (!accessToken) {
+      throw new Error('Googleアクセストークンがありません')
+    }
+
+    return accessToken
+  }
+
+  async function initializeGoogleCalendar(options = {}) {
     if (!googleConfigured) {
       throw new Error('Googleの認証情報が設定されていません')
     }
 
     if (googleReady && googleTokenClient.current) return googleTokenClient.current
 
-    setGoogleStatus('loading')
-    setGoogleMessage('Google読込中')
+    if (!options.silent) {
+      setGoogleStatus('loading')
+      setGoogleMessage('Google読込中')
+    }
 
     await Promise.all([
       loadScript('https://apis.google.com/js/api.js', 'google-api-client'),
@@ -734,26 +1025,39 @@ export default function App() {
     })
 
     setGoogleReady(true)
-    setGoogleStatus('ready')
-    setGoogleMessage('Google準備OK')
+    if (!options.silent) {
+      setGoogleStatus('ready')
+      setGoogleMessage('Google準備OK')
+    }
     return googleTokenClient.current
   }
 
   async function requestGoogleAccess(options = {}) {
-    const tokenClient = await initializeGoogleCalendar()
+    const tokenClient = await initializeGoogleCalendar({ silent: options.silent })
 
     return new Promise((resolve, reject) => {
       tokenClient.callback = response => {
         if (response.error) {
+          console.log('Google Identity Services token error', response)
           reject(new Error(response.error))
           return
         }
 
-        if (!window.google.accounts.oauth2.hasGrantedAllScopes(response, GOOGLE_EVENTS_SCOPE)) {
+        if (!hasGoogleEventsScope(response)) {
+          console.log('Google Identity Services token missing calendar.events scope', response)
           reject(new Error('Googleカレンダーの追加権限が許可されていません'))
           return
         }
 
+        if (response.access_token) {
+          googleAccessTokenRef.current = response.access_token
+          window.gapi?.client?.setToken(response)
+        }
+
+        console.log('Google Identity Services token granted calendar.events scope', {
+          scope: response.scope
+        })
+        googleConnectedRef.current = true
         setGoogleConnected(true)
         setGoogleStatus('connected')
         setGoogleMessage('Google連携済み')
@@ -761,7 +1065,8 @@ export default function App() {
       }
 
       const token = window.gapi.client.getToken()
-      tokenClient.requestAccessToken({ prompt: options.prompt ?? (token ? '' : 'consent') })
+      const prompt = options.prompt ?? (hasGoogleEventsScope(token) ? '' : 'consent')
+      tokenClient.requestAccessToken({ prompt })
     })
   }
 
@@ -771,6 +1076,7 @@ export default function App() {
       setGoogleMessage('Google連携中')
       await requestGoogleAccess()
     } catch (error) {
+      googleConnectedRef.current = false
       setGoogleConnected(false)
       setGoogleStatus('error')
       setGoogleMessage(error.message || 'Google連携に失敗しました')
@@ -778,75 +1084,235 @@ export default function App() {
   }
 
   async function addEventToGoogleCalendar(event) {
+    if (event.googleEventId) return event
+    if (pendingGoogleInsertIdsRef.current.has(event.id)) return event
+
+    pendingGoogleInsertIdsRef.current.add(event.id)
     try {
       setGoogleStatus('adding')
       setGoogleMessage('Googleカレンダーに追加中')
 
-      if (!window.gapi?.client?.getToken()) {
-        await requestGoogleAccess({ prompt: '' })
-      }
+      const normalizedEvent = normalizePlannerEvent(event)
+      const accessToken = await ensureGoogleAccessToken()
+      const response = await insertGoogleCalendarEvent(normalizedEvent, accessToken)
 
-      const response = await window.gapi.client.calendar.events.insert({
-        calendarId: 'primary',
-        resource: eventToGoogleCalendarPayload(event)
+      console.log('Google Calendar events.insert success', {
+        localEventId: event.id,
+        googleEventId: response.id,
+        result: response
       })
 
+      const syncedEvent = {
+        ...normalizedEvent,
+        googleEventId: response.id,
+        googleHtmlLink: response.htmlLink || ''
+      }
+
       setEvents(prev => prev.map(item => (
-        item.id === event.id
-          ? {
-              ...item,
-              googleEventId: response.result.id,
-              googleHtmlLink: response.result.htmlLink || ''
-            }
-          : item
+        item.id === event.id ? { ...item, ...syncedEvent } : item
       )))
+      googleConnectedRef.current = true
       setGoogleConnected(true)
       setGoogleStatus('connected')
       setGoogleMessage('Googleカレンダーに追加しました')
-    } catch {
+      return syncedEvent
+    } catch (error) {
+      console.error('Google Calendar insert failed', error)
+      console.log('Google Calendar events.insert failed', {
+        localEventId: event.id,
+        error
+      })
       setGoogleStatus('error')
-      setGoogleMessage('Googleカレンダーへの追加に失敗しました')
+      setGoogleMessage('Googleカレンダーへの追加に失敗しました。Consoleを確認してください。')
+      return event
+    } finally {
+      pendingGoogleInsertIdsRef.current.delete(event.id)
     }
   }
 
-  async function importGoogleWeek() {
+  async function updateEventInGoogleCalendar(event) {
+    if (!event.googleEventId || !googleConfigured) return
+
     try {
+      const accessToken = await ensureGoogleAccessToken()
+      await updateGoogleCalendarEvent(event, accessToken)
+      setGoogleStatus('connected')
+    } catch (error) {
+      console.error('Google Calendar update failed', error)
+      setGoogleStatus('error')
+      setGoogleMessage('Googleカレンダーの更新に失敗しました。Consoleを確認してください。')
+    }
+  }
+
+  useEffect(() => {
+    updateGoogleEventRef.current = updateEventInGoogleCalendar
+  })
+
+  async function deleteEventFromGoogleCalendar(event) {
+    if (!event.googleEventId || !googleConfigured) return
+
+    try {
+      const accessToken = await ensureGoogleAccessToken()
+      await deleteGoogleCalendarEvent(event.googleEventId, accessToken)
+      setGoogleStatus('connected')
+    } catch (error) {
+      console.error('Google Calendar delete failed', error)
+      setGoogleStatus('error')
+      setGoogleMessage('Googleカレンダーの削除に失敗しました。Consoleを確認してください。')
+    }
+  }
+
+  async function syncUnsyncedPlannerEventsToGoogle(localEvents, weekDateSet, accessToken) {
+    let syncedCount = 0
+    let failureCount = 0
+    let nextEvents = localEvents
+
+    for (const event of localEvents) {
+      const shouldSync = (
+        !event.googleEventId &&
+        event.source !== GOOGLE_EVENT_SOURCE &&
+        weekDateSet.has(event.date) &&
+        !pendingGoogleInsertIdsRef.current.has(event.id)
+      )
+
+      if (!shouldSync) continue
+
+      pendingGoogleInsertIdsRef.current.add(event.id)
+      try {
+        const normalizedEvent = normalizePlannerEvent(event)
+        const response = await insertGoogleCalendarEvent(normalizedEvent, accessToken)
+        syncedCount += 1
+        nextEvents = nextEvents.map(item => (
+          item.id === event.id
+            ? {
+                ...item,
+                ...normalizedEvent,
+                googleEventId: response.id,
+                googleHtmlLink: response.htmlLink || ''
+              }
+            : item
+        ))
+      } catch (error) {
+        failureCount += 1
+        console.error('Google Calendar insert failed', error)
+      } finally {
+        pendingGoogleInsertIdsRef.current.delete(event.id)
+      }
+    }
+
+    return { events: nextEvents, syncedCount, failureCount }
+  }
+
+  async function syncCurrentWeekWithGoogle(options = {}) {
+    const automatic = Boolean(options.automatic)
+    if (automatic) console.log('auto sync start')
+
+    if (!googleConfigured) {
+      if (automatic) console.log('auto sync skipped: not connected')
+      setGoogleStatus('missing-config')
+      setGoogleMessage('Google設定待ち')
+      return
+    }
+
+    const token = window.gapi?.client?.getToken()
+    const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+
+    if (!isGoogleConnected) {
+      if (automatic) console.log('auto sync skipped: not connected')
+      return
+    }
+
+    if (isSyncingRef.current) {
+      return
+    }
+
+    isSyncingRef.current = true
+    setIsSyncing(true)
+
+    try {
+      let accessToken = currentGoogleAccessToken()
+      if (!accessToken) {
+        if (automatic) {
+          try {
+            await requestGoogleAccess({ prompt: '', silent: true })
+          } catch {
+            console.log('auto sync skipped: no access token')
+            return
+          }
+
+          accessToken = currentGoogleAccessToken()
+          if (!accessToken) {
+            console.log('auto sync skipped: no access token')
+            return
+          }
+        } else {
+          accessToken = await ensureGoogleAccessToken()
+        }
+      }
+
       setGoogleStatus('syncing')
-      setGoogleMessage('今週を読込中')
-      await requestGoogleAccess()
+      setGoogleMessage('同期中...')
 
-      const start = new Date(weekDates[0])
-      const end = new Date(weekDates[6])
-      start.setHours(0, 0, 0, 0)
-      end.setDate(end.getDate() + 1)
-      end.setHours(0, 0, 0, 0)
+      const weekStartISO = formatISO(weekDates[0])
+      const weekEndISO = formatISO(weekDates[6])
+      const timeMin = googleDateTime(weekStartISO, '00:00')
+      const timeMax = googleDateTime(weekEndISO, '24:00')
 
-      const response = await window.gapi.client.calendar.events.list({
-        calendarId: 'primary',
-        timeMin: start.toISOString(),
-        timeMax: end.toISOString(),
-        showDeleted: false,
-        singleEvents: true,
-        maxResults: 250,
-        orderBy: 'startTime'
-      })
-
+      console.log('syncing week', { timeMin, timeMax })
+      const data = await listGoogleCalendarEvents({ timeMin, timeMax }, accessToken)
+      const googleItems = data.items || []
       const weekDateSet = new Set(weekDates.map(day => formatISO(day)))
-      const importedEvents = (response.result.items || [])
+      const importedEvents = googleItems
         .map(normalizeGoogleEvent)
         .filter(item => item && weekDateSet.has(item.date))
 
-      setEvents(prev => [
-        ...prev.filter(item => item.source !== GOOGLE_EVENT_SOURCE || !weekDateSet.has(item.date)),
-        ...importedEvents
-      ])
+      if (googleItems.length === 0) {
+        console.log('Google Calendar API returned 0 events for this week', data)
+      }
 
+      const mergedEvents = mergeGoogleImportedEvents(eventsRef.current, importedEvents, weekDateSet)
+      const syncResult = await syncUnsyncedPlannerEventsToGoogle(mergedEvents, weekDateSet, accessToken)
+      setEvents(syncResult.events)
+
+      console.log('auto sync completed', {
+        importedCount: importedEvents.length,
+        uploadedCount: syncResult.syncedCount
+      })
       setGoogleStatus('connected')
-      setGoogleMessage(`${importedEvents.length}件の予定を読込済み`)
+      if (syncResult.failureCount > 0) {
+        setGoogleMessage('同期に失敗しました')
+      } else {
+        setGoogleMessage(`最終同期: ${formatClock(new Date())}`)
+      }
     } catch (error) {
+      console.error('auto sync failed', error)
+      console.error('Google Calendar list failed', error)
       setGoogleStatus('error')
-      setGoogleMessage(error.message || 'Googleエラー')
+      setGoogleMessage('同期に失敗しました')
+    } finally {
+      isSyncingRef.current = false
+      setIsSyncing(false)
     }
+  }
+
+  useEffect(() => {
+    syncCurrentWeekWithGoogleRef.current = syncCurrentWeekWithGoogle
+  })
+
+  useEffect(() => {
+    void syncCurrentWeekWithGoogleRef.current?.({ automatic: true })
+  }, [centerDate, googleConnected])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void syncCurrentWeekWithGoogleRef.current?.({ automatic: true })
+    }, GOOGLE_AUTO_SYNC_INTERVAL_MS)
+
+    return () => window.clearInterval(interval)
+  }, [])
+
+  async function importGoogleWeek() {
+    await syncCurrentWeekWithGoogle({ automatic: false })
   }
 
   function disconnectGoogleCalendar() {
@@ -856,6 +1322,8 @@ export default function App() {
       window.gapi.client.setToken('')
     }
     setGoogleConnected(false)
+    googleConnectedRef.current = false
+    googleAccessTokenRef.current = ''
     setGoogleStatus(googleReady ? 'ready' : 'idle')
     setGoogleMessage('Google準備OK')
   }
@@ -893,6 +1361,7 @@ export default function App() {
   function eventsFor(dateISO) {
     return events
       .filter(item => item.date === dateISO)
+      .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   }
 
@@ -980,7 +1449,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={connectGoogleCalendar}
-                disabled={!googleConfigured || googleStatus === 'loading'}
+                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
               >
                 Google連携
               </button>
@@ -988,9 +1457,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={importGoogleWeek}
-                disabled={googleStatus === 'loading' || googleStatus === 'syncing' || googleStatus === 'adding'}
+                disabled={googleStatus === 'loading' || googleStatus === 'syncing' || googleStatus === 'adding' || isSyncing}
               >
-                今週を読込
+                {isSyncing ? '同期中...' : '今週を読込'}
               </button>
             )}
             {googleConnected && (

@@ -580,7 +580,7 @@
 }
 .event-block {
   position: absolute;
-  z-index: 2;
+  z-index: 10;
   left: 22px;
   right: 5px;
   background: #ffd8bd;
@@ -657,7 +657,7 @@
   right: 0;
   height: 1px;
   background: rgba(255, 80, 0, 0.95);
-  z-index: 1;
+  z-index: 50;
   pointer-events: none;
 }
 .current-time-line::before {
@@ -670,6 +670,7 @@
   height: 10px;
   border-radius: 50%;
   background: rgba(255, 80, 0, 0.95);
+  pointer-events: none;
 }
 .tasks-panel {
   padding: 6px 7px;
