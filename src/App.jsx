@@ -9,7 +9,9 @@ const UNDATED_TASK_DATE = '__undated__'
 const SHARED_MEMO_KEY = '__shared_memo__'
 const GOOGLE_EVENT_SOURCE = 'google-calendar'
 const GOOGLE_DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'
-const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/calendar.readonly'
+const GOOGLE_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
+const GOOGLE_SCOPES = GOOGLE_EVENTS_SCOPE
+const GOOGLE_TIME_ZONE = 'Asia/Tokyo'
 const GOOGLE_CONFIG = {
   clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
   apiKey: import.meta.env.VITE_GOOGLE_API_KEY || ''
@@ -128,6 +130,43 @@ function normalizeEventTimeRange(startTime, endTime) {
   return {
     startTime: minutesToTime(startMinutes),
     endTime: minutesToTime(endMinutes)
+  }
+}
+
+function googleDateTime(dateISO, time) {
+  const [year, month, day] = dateISO.split('-').map(Number)
+  let [hour, minute] = time.split(':').map(Number)
+  const dayOffset = hour === 24 ? 1 : 0
+
+  if (hour === 24) {
+    hour = 0
+    minute = 0
+  }
+
+  const date = new Date(Date.UTC(year, month - 1, day + dayOffset))
+  const datePart = [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0')
+  ].join('-')
+
+  return `${datePart}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00+09:00`
+}
+
+function eventToGoogleCalendarPayload(event) {
+  return {
+    summary: event.title,
+    start: {
+      dateTime: googleDateTime(event.date, event.startTime),
+      timeZone: GOOGLE_TIME_ZONE
+    },
+    end: {
+      dateTime: googleDateTime(event.date, event.endTime),
+      timeZone: GOOGLE_TIME_ZONE
+    },
+    reminders: {
+      useDefault: true
+    }
   }
 }
 
@@ -438,7 +477,7 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
 }
 
 export default function App() {
-  const googleConfigured = Boolean(GOOGLE_CONFIG.clientId && GOOGLE_CONFIG.apiKey)
+  const googleConfigured = Boolean(GOOGLE_CONFIG.clientId)
   const googleTokenClient = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
@@ -638,12 +677,18 @@ export default function App() {
       ...ev,
       ...normalizeEventTimeRange(ev.startTime, ev.endTime)
     }
+    const isNewEvent = !ev.id
 
-    if (ev.id) {
+    if (!isNewEvent) {
       setEvents(prev => prev.map(item => (item.id === ev.id ? normalizedEvent : item)))
     } else {
       const id = createLocalId('event')
-      setEvents(prev => [...prev, { ...normalizedEvent, id }])
+      const localEvent = { ...normalizedEvent, id }
+      setEvents(prev => [...prev, localEvent])
+
+      if (googleConnected) {
+        void addEventToGoogleCalendar(localEvent)
+      }
     }
     setEditing(null)
   }
@@ -677,13 +722,14 @@ export default function App() {
     })
 
     await window.gapi.client.init({
-      apiKey: GOOGLE_CONFIG.apiKey,
+      ...(GOOGLE_CONFIG.apiKey ? { apiKey: GOOGLE_CONFIG.apiKey } : {}),
       discoveryDocs: [GOOGLE_DISCOVERY_DOC]
     })
 
     googleTokenClient.current = window.google.accounts.oauth2.initTokenClient({
       client_id: GOOGLE_CONFIG.clientId,
       scope: GOOGLE_SCOPES,
+      include_granted_scopes: true,
       callback: () => {}
     })
 
@@ -693,7 +739,7 @@ export default function App() {
     return googleTokenClient.current
   }
 
-  async function requestGoogleAccess() {
+  async function requestGoogleAccess(options = {}) {
     const tokenClient = await initializeGoogleCalendar()
 
     return new Promise((resolve, reject) => {
@@ -702,6 +748,12 @@ export default function App() {
           reject(new Error(response.error))
           return
         }
+
+        if (!window.google.accounts.oauth2.hasGrantedAllScopes(response, GOOGLE_EVENTS_SCOPE)) {
+          reject(new Error('Googleカレンダーの追加権限が許可されていません'))
+          return
+        }
+
         setGoogleConnected(true)
         setGoogleStatus('connected')
         setGoogleMessage('Google連携済み')
@@ -709,8 +761,52 @@ export default function App() {
       }
 
       const token = window.gapi.client.getToken()
-      tokenClient.requestAccessToken({ prompt: token ? '' : 'consent' })
+      tokenClient.requestAccessToken({ prompt: options.prompt ?? (token ? '' : 'consent') })
     })
+  }
+
+  async function connectGoogleCalendar() {
+    try {
+      setGoogleStatus('loading')
+      setGoogleMessage('Google連携中')
+      await requestGoogleAccess()
+    } catch (error) {
+      setGoogleConnected(false)
+      setGoogleStatus('error')
+      setGoogleMessage(error.message || 'Google連携に失敗しました')
+    }
+  }
+
+  async function addEventToGoogleCalendar(event) {
+    try {
+      setGoogleStatus('adding')
+      setGoogleMessage('Googleカレンダーに追加中')
+
+      if (!window.gapi?.client?.getToken()) {
+        await requestGoogleAccess({ prompt: '' })
+      }
+
+      const response = await window.gapi.client.calendar.events.insert({
+        calendarId: 'primary',
+        resource: eventToGoogleCalendarPayload(event)
+      })
+
+      setEvents(prev => prev.map(item => (
+        item.id === event.id
+          ? {
+              ...item,
+              googleEventId: response.result.id,
+              googleHtmlLink: response.result.htmlLink || ''
+            }
+          : item
+      )))
+      setGoogleConnected(true)
+      setGoogleStatus('connected')
+      setGoogleMessage('Googleカレンダーに追加しました')
+    } catch {
+      setGoogleStatus('error')
+      setGoogleMessage('Googleカレンダーへの追加に失敗しました')
+    }
   }
 
   async function importGoogleWeek() {
@@ -880,13 +976,23 @@ export default function App() {
           <div className={`google-sync ${googleStatus}`}>
             <span className="google-dot" aria-hidden="true" />
             <span className="google-text">{googleMessage}</span>
-            <button
-              type="button"
-              onClick={importGoogleWeek}
-              disabled={!googleConfigured || googleStatus === 'loading' || googleStatus === 'syncing'}
-            >
-              {googleConnected ? '今週を読込' : '連携する'}
-            </button>
+            {!googleConnected ? (
+              <button
+                type="button"
+                onClick={connectGoogleCalendar}
+                disabled={!googleConfigured || googleStatus === 'loading'}
+              >
+                Google連携
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={importGoogleWeek}
+                disabled={googleStatus === 'loading' || googleStatus === 'syncing' || googleStatus === 'adding'}
+              >
+                今週を読込
+              </button>
+            )}
             {googleConnected && (
               <button type="button" className="google-signout" onClick={disconnectGoogleCalendar}>
                 連携解除

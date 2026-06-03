@@ -241,7 +241,8 @@
   background: #a8a8a8;
 }
 .google-sync.connected .google-dot,
-.google-sync.syncing .google-dot {
+.google-sync.syncing .google-dot,
+.google-sync.adding .google-dot {
   background: #2f8f5b;
 }
 .google-sync.error .google-dot,
