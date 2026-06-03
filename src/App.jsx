@@ -8,6 +8,7 @@ const REMINDER_FIRED_STORAGE_KEY = 'wdp_reminders_fired_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
 const SHARED_MEMO_KEY = '__shared_memo__'
+const DASHBOARD_MEMO_PREFIX = 'dashboardMemo_'
 const GOOGLE_EVENT_SOURCE = 'google-calendar'
 const GOOGLE_DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest'
 const GOOGLE_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
@@ -36,6 +37,42 @@ function formatISO(d) {
   const m = String(dt.getMonth() + 1).padStart(2, '0')
   const day = String(dt.getDate()).padStart(2, '0')
   return `${y}-${m}-${day}`
+}
+
+function dateFromISO(dateISO) {
+  const [year, month, day] = dateISO.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
+function dashboardMemoStorageKey(dateISO) {
+  return `${DASHBOARD_MEMO_PREFIX}${dateISO}`
+}
+
+function storedDashboardMemos() {
+  const dashboardMemos = {}
+
+  for (let i = 0; i < localStorage.length; i += 1) {
+    const key = localStorage.key(i)
+    if (key?.startsWith(DASHBOARD_MEMO_PREFIX)) {
+      dashboardMemos[key] = localStorage.getItem(key) || ''
+    }
+  }
+
+  return dashboardMemos
+}
+
+function startOfMonth(date) {
+  const d = new Date(date)
+  d.setDate(1)
+  d.setHours(0, 0, 0, 0)
+  return d
+}
+
+function dateInMonth(date, preferredDay = 1) {
+  const year = date.getFullYear()
+  const month = date.getMonth()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  return formatISO(new Date(year, month, Math.min(preferredDay, daysInMonth)))
 }
 
 function minutesFromTime(t) {
@@ -68,6 +105,7 @@ const TIME_OPTIONS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / STEP_MINUTES + 1 },
   (_, i) => minutesToTime(GRID_START_MINUTES + i * STEP_MINUTES)
 )
+const START_TIME_OPTIONS = TIME_OPTIONS.slice(0, -1)
 const DEFAULT_EVENT_REMINDER_OFFSETS = [30, 10, 5]
 const EVENT_REMINDER_CHOICES = [
   { value: 60, label: '1時間前' },
@@ -203,7 +241,7 @@ function eventToGoogleCalendarPayload(event) {
   }
 }
 
-function hasGoogleEventsScope(tokenResponse) {
+function hasGoogleCalendarEventsScope(tokenResponse) {
   if (!tokenResponse || !window.google?.accounts?.oauth2) return false
   return window.google.accounts.oauth2.hasGrantedAllScopes(tokenResponse, GOOGLE_EVENTS_SCOPE)
 }
@@ -221,11 +259,98 @@ async function readGoogleCalendarResponse(response) {
   }
 }
 
-function googleCalendarApiError(response, responseBody, fallbackMessage) {
-  const error = new Error(responseBody?.error?.message || fallbackMessage)
+async function googleCalendarApiError(response, fallbackMessage) {
+  const errorBody = await response.json().catch(() => null)
+  const message = errorBody?.error?.message || fallbackMessage
+  console.error('Google sync failed', {
+    status: response.status,
+    statusText: response.statusText,
+    errorBody,
+    message
+  })
+
+  const error = new Error(message)
   error.status = response.status
-  error.response = responseBody
+  error.statusText = response.statusText
+  error.errorBody = errorBody
+  error.response = errorBody
   return error
+}
+
+function googleSyncErrorInfo(error) {
+  const errorBody = error?.errorBody || error?.response || null
+  const status = error?.status || errorBody?.error?.code || null
+  const statusText = error?.statusText || ''
+  const message = errorBody?.error?.message || error?.message || ''
+
+  return { status, statusText, errorBody, message }
+}
+
+function googleSyncErrorReason(errorBody) {
+  const errors = errorBody?.error?.errors
+  if (Array.isArray(errors)) {
+    return errors.map(item => item.reason || item.message || '').join(' ')
+  }
+
+  return errorBody?.error?.status || ''
+}
+
+function googleSyncDisplayMessage(error, fallbackMessage = 'Google同期に失敗しました。詳細はConsoleを確認してください。') {
+  const { status, errorBody, message } = googleSyncErrorInfo(error)
+  const reason = googleSyncErrorReason(errorBody)
+  const text = `${message} ${reason}`.toLowerCase()
+
+  if (error?.reauthRequired || message === 'Google再認証が必要です') {
+    return 'Google再認証が必要です'
+  }
+
+  if (status === 401) {
+    return 'Google連携の有効期限が切れています。再認証してください。'
+  }
+
+  if (status === 403 && (
+    text.includes('accessnotconfigured') ||
+    text.includes('api not enabled') ||
+    text.includes('has not been used') ||
+    text.includes('disabled') ||
+    text.includes('enable')
+  )) {
+    return 'Google Calendar APIが有効化されていない可能性があります。Google Cloud Consoleを確認してください。'
+  }
+
+  if (status === 403 && (
+    text.includes('insufficient') ||
+    text.includes('scope') ||
+    text.includes('permission') ||
+    text.includes('forbidden')
+  )) {
+    return 'Googleカレンダーの権限が不足しています。もう一度Google連携してください。'
+  }
+
+  if (status === 400) {
+    return '予定データの形式に問題があります。開始時間・終了時間を確認してください。'
+  }
+
+  if (!status && (
+    error?.name === 'TypeError' ||
+    text.includes('failed to fetch') ||
+    text.includes('network') ||
+    text.includes('load failed')
+  )) {
+    return 'ネットワーク接続に問題があります。時間を置いてもう一度試してください。'
+  }
+
+  return fallbackMessage
+}
+
+function logGoogleSyncFailure(error) {
+  const { status, statusText, errorBody, message } = googleSyncErrorInfo(error)
+  console.error('Google sync failed', {
+    status,
+    statusText,
+    errorBody,
+    message
+  })
 }
 
 async function insertGoogleCalendarEvent(event, accessToken) {
@@ -242,14 +367,14 @@ async function insertGoogleCalendarEvent(event, accessToken) {
     },
     body: JSON.stringify(googleEventBody)
   })
+  if (!response.ok) {
+    throw await googleCalendarApiError(response, 'Google Calendar insert failed')
+  }
+
   const responseBody = await readGoogleCalendarResponse(response)
 
   console.log('Google Calendar insert response', responseBody)
   console.log('Google events.insert response', responseBody)
-
-  if (!response.ok) {
-    throw googleCalendarApiError(response, responseBody, 'Google Calendar insert failed')
-  }
 
   return responseBody
 }
@@ -272,13 +397,13 @@ async function listGoogleCalendarEvents({ timeMin, timeMax }, accessToken) {
       Authorization: `Bearer ${accessToken}`
     }
   })
+  if (!response.ok) {
+    throw await googleCalendarApiError(response, 'Google Calendar list failed')
+  }
+
   const responseBody = await readGoogleCalendarResponse(response)
 
   console.log('Google events.list response', responseBody)
-
-  if (!response.ok) {
-    throw googleCalendarApiError(response, responseBody, 'Google Calendar list failed')
-  }
 
   return responseBody || {}
 }
@@ -295,13 +420,13 @@ async function updateGoogleCalendarEvent(event, accessToken) {
     },
     body: JSON.stringify(eventToGoogleCalendarPayload(event))
   })
+  if (!response.ok) {
+    throw await googleCalendarApiError(response, 'Google Calendar update failed')
+  }
+
   const responseBody = await readGoogleCalendarResponse(response)
 
   console.log('Google events.patch response', responseBody)
-
-  if (!response.ok) {
-    throw googleCalendarApiError(response, responseBody, 'Google Calendar update failed')
-  }
 
   return responseBody
 }
@@ -315,6 +440,10 @@ async function deleteGoogleCalendarEvent(googleEventId, accessToken) {
       Authorization: `Bearer ${accessToken}`
     }
   })
+  if (!response.ok) {
+    throw await googleCalendarApiError(response, 'Google Calendar delete failed')
+  }
+
   const responseBody = await readGoogleCalendarResponse(response)
 
   console.log('Google events.delete response', {
@@ -322,10 +451,6 @@ async function deleteGoogleCalendarEvent(googleEventId, accessToken) {
     status: response.status,
     body: responseBody
   })
-
-  if (!response.ok) {
-    throw googleCalendarApiError(response, responseBody, 'Google Calendar delete failed')
-  }
 
   return responseBody
 }
@@ -509,6 +634,34 @@ function dayHeaderTone(date) {
   return ''
 }
 
+function taskDateKey(task) {
+  return task.date || UNDATED_TASK_DATE
+}
+
+function sortTasksByCompletion(tasks) {
+  return tasks
+    .map((task, index) => ({ task, index }))
+    .sort((a, b) => {
+      if (a.task.completed !== b.task.completed) {
+        return a.task.completed ? -1 : 1
+      }
+      return a.index - b.index
+    })
+    .map(item => item.task)
+}
+
+function reorderTasksForDate(tasks, dateISO) {
+  const sameDateTasks = sortTasksByCompletion(tasks.filter(task => taskDateKey(task) === dateISO))
+  let sameDateIndex = 0
+
+  return tasks.map(task => {
+    if (taskDateKey(task) !== dateISO) return task
+    const nextTask = sameDateTasks[sameDateIndex]
+    sameDateIndex += 1
+    return nextTask
+  })
+}
+
 function defaultEvents() {
   try {
     const raw = localStorage.getItem(EVENT_STORAGE_KEY)
@@ -531,17 +684,18 @@ function defaultTasks() {
 function defaultMemos() {
   try {
     const raw = localStorage.getItem(MEMO_STORAGE_KEY)
-    if (!raw) return {}
+    const dashboardMemos = storedDashboardMemos()
+    if (!raw) return dashboardMemos
 
     const parsed = JSON.parse(raw)
-    if (parsed[SHARED_MEMO_KEY] !== undefined) return parsed
+    if (parsed[SHARED_MEMO_KEY] !== undefined) return { ...parsed, ...dashboardMemos }
 
     const thisWeekKey = formatISO(startOfWeek(new Date()))
     const fallbackMemo = parsed[thisWeekKey] || Object.values(parsed).find(value => (
       typeof value === 'string' && value.trim()
     )) || ''
 
-    return { ...parsed, [SHARED_MEMO_KEY]: fallbackMemo }
+    return { ...parsed, ...dashboardMemos, [SHARED_MEMO_KEY]: fallbackMemo }
   } catch {
     return {}
   }
@@ -581,7 +735,11 @@ function saveFiredReminders(reminders) {
 }
 
 function saveGoogleConnected(connected) {
-  localStorage.setItem(GOOGLE_CONNECTED_STORAGE_KEY, connected ? 'true' : 'false')
+  if (connected) {
+    localStorage.setItem(GOOGLE_CONNECTED_STORAGE_KEY, 'true')
+  } else {
+    localStorage.removeItem(GOOGLE_CONNECTED_STORAGE_KEY)
+  }
 }
 
 function formatClock(date) {
@@ -706,7 +864,7 @@ export default function App() {
   const googleConfigured = Boolean(GOOGLE_CONFIG.clientId)
   const googleTokenClient = useRef(null)
   const googleAccessTokenRef = useRef('')
-  const googleConnectedRef = useRef(false)
+  const googleConnectedRef = useRef(googleConfigured && defaultGoogleConnected())
   const eventsRef = useRef([])
   const dragUpdatedEventRef = useRef(null)
   const pendingGoogleInsertIdsRef = useRef(new Set())
@@ -736,10 +894,34 @@ export default function App() {
     'Notification' in window ? window.Notification.permission : 'unsupported'
   ))
   const [googleReady, setGoogleReady] = useState(false)
-  const [googleConnected, setGoogleConnected] = useState(() => defaultGoogleConnected())
-  const [googleStatus, setGoogleStatus] = useState(googleConfigured ? 'idle' : 'missing-config')
-  const [googleMessage, setGoogleMessage] = useState(googleConfigured ? 'Google準備OK' : 'Google設定待ち')
+  const [googleConnected, setGoogleConnected] = useState(() => googleConfigured && defaultGoogleConnected())
+  const [googleStatus, setGoogleStatus] = useState(() => {
+    if (!googleConfigured) return 'missing-config'
+    return defaultGoogleConnected() ? 'connected' : 'idle'
+  })
+  const [googleMessage, setGoogleMessage] = useState(() => {
+    if (!googleConfigured) return 'Google設定待ち'
+    return defaultGoogleConnected() ? 'Google連携済み' : 'Google準備OK'
+  })
   const [isSyncing, setIsSyncing] = useState(false)
+  const [currentView, setCurrentView] = useState('planner')
+  const [selectedDashboardDate, setSelectedDashboardDate] = useState(() => formatISO(new Date()))
+  const [dashboardCalendarMonth, setDashboardCalendarMonth] = useState(() => startOfMonth(new Date()))
+  const [monthViewMonth, setMonthViewMonth] = useState(() => startOfMonth(new Date()))
+  const [selectedMonthDate, setSelectedMonthDate] = useState(() => formatISO(new Date()))
+  const [dashboardCopyMessage, setDashboardCopyMessage] = useState('')
+  const [dashboardEventDraft, setDashboardEventDraft] = useState({
+    title: '',
+    startTime: '09:00',
+    endTime: '10:00'
+  })
+  const [dashboardTaskDraft, setDashboardTaskDraft] = useState('')
+  const [monthEventDraft, setMonthEventDraft] = useState({
+    title: '',
+    startTime: '09:00',
+    endTime: '10:00'
+  })
+  const [monthTaskDraft, setMonthTaskDraft] = useState('')
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
@@ -762,8 +944,93 @@ export default function App() {
   const weekLabel = `${weekDates[0].getFullYear()}年${weekDates[0].getMonth() + 1}月${weekDates[0].getDate()}日〜${weekDates[6].getMonth() + 1}月${weekDates[6].getDate()}日`
   const currentDateISO = formatISO(now)
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
-  const currentTimeTop = ((currentMinutes - GRID_START_MINUTES) / 60) * ROW_HEIGHT
-  const currentTimeVisible = currentMinutes >= GRID_START_MINUTES && currentMinutes <= GRID_END_MINUTES
+  const dashboardMemoKey = dashboardMemoStorageKey(selectedDashboardDate)
+  const dashboardMemoText = memos[dashboardMemoKey] || ''
+  const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long'
+  })
+  const dashboardMonthLabel = dashboardCalendarMonth.toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long'
+  })
+  const selectedDashboardEvents = useMemo(() => (
+    events
+      .filter(item => item.date === selectedDashboardDate)
+      .map(normalizePlannerEvent)
+      .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
+  ), [events, selectedDashboardDate])
+  const selectedDashboardTasks = useMemo(() => (
+    sortTasksByCompletion(tasks.filter(item => item.date === selectedDashboardDate))
+  ), [tasks, selectedDashboardDate])
+  const dashboardCalendarCells = useMemo(() => {
+    const year = dashboardCalendarMonth.getFullYear()
+    const month = dashboardCalendarMonth.getMonth()
+    const firstDay = new Date(year, month, 1)
+    const leadingBlanks = (firstDay.getDay() + 6) % 7
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const cells = Array.from({ length: leadingBlanks }, () => null)
+
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      cells.push(formatISO(new Date(year, month, day)))
+    }
+
+    while (cells.length % 7 !== 0) {
+      cells.push(null)
+    }
+
+    return cells
+  }, [dashboardCalendarMonth])
+  const dashboardEventEndOptions = useMemo(() => (
+    TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(dashboardEventDraft.startTime))
+  ), [dashboardEventDraft.startTime])
+  const monthEventEndOptions = useMemo(() => (
+    TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(monthEventDraft.startTime))
+  ), [monthEventDraft.startTime])
+  const monthViewTitle = monthViewMonth.toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long'
+  })
+  const monthCalendarCells = useMemo(() => {
+    const year = monthViewMonth.getFullYear()
+    const month = monthViewMonth.getMonth()
+    const firstDay = new Date(year, month, 1)
+    const leadingBlanks = firstDay.getDay()
+    const daysInMonth = new Date(year, month + 1, 0).getDate()
+    const cells = Array.from({ length: leadingBlanks }, () => null)
+
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      cells.push(formatISO(new Date(year, month, day)))
+    }
+
+    while (cells.length % 7 !== 0) {
+      cells.push(null)
+    }
+
+    return cells
+  }, [monthViewMonth])
+  const selectedMonthDateLabel = dateFromISO(selectedMonthDate).toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long'
+  })
+  const selectedMonthDateShortLabel = dateFromISO(selectedMonthDate).toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  })
+  const selectedMonthEvents = useMemo(() => (
+    events
+      .filter(item => item.date === selectedMonthDate)
+      .map(normalizePlannerEvent)
+      .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
+  ), [events, selectedMonthDate])
+  const selectedMonthTasks = useMemo(() => (
+    sortTasksByCompletion(tasks.filter(item => item.date === selectedMonthDate))
+  ), [tasks, selectedMonthDate])
 
   useEffect(() => {
     dragSelectionRef.current = dragSelection
@@ -937,9 +1204,8 @@ export default function App() {
     } else {
       const id = createLocalId('event')
       const localEvent = { ...normalizedEvent, id }
-      const token = window.gapi?.client?.getToken()
       const accessToken = currentGoogleAccessToken()
-      const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+      const isGoogleConnected = isGoogleSyncConnected()
 
       console.log('planner event created', localEvent)
       console.log('google connected', isGoogleConnected)
@@ -972,20 +1238,56 @@ export default function App() {
     return googleAccessTokenRef.current || window.gapi?.client?.getToken()?.access_token || ''
   }
 
+  function isGoogleSyncConnected() {
+    const token = window.gapi?.client?.getToken()
+    return googleConnectedRef.current || hasGoogleCalendarEventsScope(token)
+  }
+
+  function setGoogleSyncFailure(error, fallbackMessage) {
+    logGoogleSyncFailure(error)
+    const message = googleSyncDisplayMessage(error, fallbackMessage)
+    const { status } = googleSyncErrorInfo(error)
+
+    if (status === 401 || message.includes('再認証')) {
+      googleAccessTokenRef.current = ''
+      window.gapi?.client?.setToken(null)
+      setGoogleStatus('reauth')
+    } else {
+      setGoogleStatus('error')
+    }
+
+    setGoogleMessage(message)
+  }
+
+  async function reauthenticateGoogleCalendar() {
+    try {
+      setGoogleStatus('loading')
+      setGoogleMessage('Google再認証中')
+      await requestGoogleAccess({ prompt: 'consent' })
+      await syncCurrentWeekWithGoogle({ automatic: false })
+    } catch (error) {
+      console.error('Google Calendar reauth failed', error)
+      setGoogleSyncFailure(error, 'Google再認証が必要です')
+    }
+  }
+
   async function ensureGoogleAccessToken(options = {}) {
     let token = window.gapi?.client?.getToken()
-    if (!hasGoogleEventsScope(token) || !currentGoogleAccessToken()) {
+    if (!hasGoogleCalendarEventsScope(token) || !currentGoogleAccessToken()) {
       await requestGoogleAccess(options)
       token = window.gapi?.client?.getToken()
     }
 
     const accessToken = currentGoogleAccessToken()
-    const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+    const isGoogleConnected = googleConnectedRef.current || hasGoogleCalendarEventsScope(token)
     console.log('google connected', isGoogleConnected)
     console.log('access token exists', Boolean(accessToken))
 
     if (!accessToken) {
-      throw new Error('Googleアクセストークンがありません')
+      const error = new Error('Google再認証が必要です')
+      error.status = 401
+      error.reauthRequired = true
+      throw error
     }
 
     return accessToken
@@ -1039,13 +1341,25 @@ export default function App() {
       tokenClient.callback = response => {
         if (response.error) {
           console.log('Google Identity Services token error', response)
-          reject(new Error(response.error))
+          const error = new Error(response.error)
+          error.status = response.error === 'interaction_required' ? 401 : null
+          error.reauthRequired = response.error === 'interaction_required'
+          error.errorBody = { error: response }
+          reject(error)
           return
         }
 
-        if (!hasGoogleEventsScope(response)) {
+        if (!hasGoogleCalendarEventsScope(response)) {
           console.log('Google Identity Services token missing calendar.events scope', response)
-          reject(new Error('Googleカレンダーの追加権限が許可されていません'))
+          const error = new Error('Googleカレンダーの追加権限が許可されていません')
+          error.status = 403
+          error.errorBody = {
+            error: {
+              message: error.message,
+              errors: [{ reason: 'insufficientPermissions', message: error.message }]
+            }
+          }
+          reject(error)
           return
         }
 
@@ -1057,6 +1371,7 @@ export default function App() {
         console.log('Google Identity Services token granted calendar.events scope', {
           scope: response.scope
         })
+        saveGoogleConnected(true)
         googleConnectedRef.current = true
         setGoogleConnected(true)
         setGoogleStatus('connected')
@@ -1065,7 +1380,7 @@ export default function App() {
       }
 
       const token = window.gapi.client.getToken()
-      const prompt = options.prompt ?? (hasGoogleEventsScope(token) ? '' : 'consent')
+      const prompt = options.prompt ?? (hasGoogleCalendarEventsScope(token) ? '' : 'consent')
       tokenClient.requestAccessToken({ prompt })
     })
   }
@@ -1111,6 +1426,7 @@ export default function App() {
       setEvents(prev => prev.map(item => (
         item.id === event.id ? { ...item, ...syncedEvent } : item
       )))
+      saveGoogleConnected(true)
       googleConnectedRef.current = true
       setGoogleConnected(true)
       setGoogleStatus('connected')
@@ -1122,8 +1438,7 @@ export default function App() {
         localEventId: event.id,
         error
       })
-      setGoogleStatus('error')
-      setGoogleMessage('Googleカレンダーへの追加に失敗しました。Consoleを確認してください。')
+      setGoogleSyncFailure(error, 'Googleカレンダーへの追加に失敗しました。Consoleを確認してください。')
       return event
     } finally {
       pendingGoogleInsertIdsRef.current.delete(event.id)
@@ -1139,8 +1454,7 @@ export default function App() {
       setGoogleStatus('connected')
     } catch (error) {
       console.error('Google Calendar update failed', error)
-      setGoogleStatus('error')
-      setGoogleMessage('Googleカレンダーの更新に失敗しました。Consoleを確認してください。')
+      setGoogleSyncFailure(error, 'Googleカレンダーの更新に失敗しました。Consoleを確認してください。')
     }
   }
 
@@ -1157,14 +1471,14 @@ export default function App() {
       setGoogleStatus('connected')
     } catch (error) {
       console.error('Google Calendar delete failed', error)
-      setGoogleStatus('error')
-      setGoogleMessage('Googleカレンダーの削除に失敗しました。Consoleを確認してください。')
+      setGoogleSyncFailure(error, 'Googleカレンダーの削除に失敗しました。Consoleを確認してください。')
     }
   }
 
   async function syncUnsyncedPlannerEventsToGoogle(localEvents, weekDateSet, accessToken) {
     let syncedCount = 0
     let failureCount = 0
+    let lastError = null
     let nextEvents = localEvents
 
     for (const event of localEvents) {
@@ -1194,13 +1508,15 @@ export default function App() {
         ))
       } catch (error) {
         failureCount += 1
+        lastError = error
         console.error('Google Calendar insert failed', error)
+        logGoogleSyncFailure(error)
       } finally {
         pendingGoogleInsertIdsRef.current.delete(event.id)
       }
     }
 
-    return { events: nextEvents, syncedCount, failureCount }
+    return { events: nextEvents, syncedCount, failureCount, lastError }
   }
 
   async function syncCurrentWeekWithGoogle(options = {}) {
@@ -1214,8 +1530,7 @@ export default function App() {
       return
     }
 
-    const token = window.gapi?.client?.getToken()
-    const isGoogleConnected = googleConnectedRef.current || hasGoogleEventsScope(token)
+    const isGoogleConnected = isGoogleSyncConnected()
 
     if (!isGoogleConnected) {
       if (automatic) console.log('auto sync skipped: not connected')
@@ -1231,22 +1546,18 @@ export default function App() {
 
     try {
       let accessToken = currentGoogleAccessToken()
-      if (!accessToken) {
-        if (automatic) {
-          try {
-            await requestGoogleAccess({ prompt: '', silent: true })
-          } catch {
-            console.log('auto sync skipped: no access token')
-            return
-          }
-
-          accessToken = currentGoogleAccessToken()
-          if (!accessToken) {
-            console.log('auto sync skipped: no access token')
-            return
-          }
-        } else {
-          accessToken = await ensureGoogleAccessToken()
+      let token = window.gapi?.client?.getToken()
+      if (!accessToken || !hasGoogleCalendarEventsScope(token)) {
+        try {
+          accessToken = await ensureGoogleAccessToken({
+            prompt: automatic ? '' : undefined,
+            silent: automatic
+          })
+        } catch (error) {
+          console.error('Google Calendar token refresh failed', error)
+          if (automatic) console.log('auto sync skipped: no access token')
+          setGoogleSyncFailure(error, 'Google再認証が必要です')
+          return
         }
       }
 
@@ -1278,17 +1589,16 @@ export default function App() {
         importedCount: importedEvents.length,
         uploadedCount: syncResult.syncedCount
       })
-      setGoogleStatus('connected')
       if (syncResult.failureCount > 0) {
-        setGoogleMessage('同期に失敗しました')
+        setGoogleSyncFailure(syncResult.lastError, '同期失敗：詳細はConsoleを確認')
       } else {
+        setGoogleStatus('connected')
         setGoogleMessage(`最終同期: ${formatClock(new Date())}`)
       }
     } catch (error) {
       console.error('auto sync failed', error)
       console.error('Google Calendar list failed', error)
-      setGoogleStatus('error')
-      setGoogleMessage('同期に失敗しました')
+      setGoogleSyncFailure(error, '同期失敗：詳細はConsoleを確認')
     } finally {
       isSyncingRef.current = false
       setIsSyncing(false)
@@ -1324,6 +1634,7 @@ export default function App() {
     setGoogleConnected(false)
     googleConnectedRef.current = false
     googleAccessTokenRef.current = ''
+    saveGoogleConnected(false)
     setGoogleStatus(googleReady ? 'ready' : 'idle')
     setGoogleMessage('Google準備OK')
   }
@@ -1366,11 +1677,11 @@ export default function App() {
   }
 
   function tasksFor(dateISO) {
-    return tasks.filter(item => item.date === dateISO)
+    return sortTasksByCompletion(tasks.filter(item => item.date === dateISO))
   }
 
   function undatedTasks() {
-    return tasks.filter(item => !item.date || item.date === UNDATED_TASK_DATE)
+    return sortTasksByCompletion(tasks.filter(item => !item.date || item.date === UNDATED_TASK_DATE))
   }
 
   function updateTaskDraft(dateISO, value) {
@@ -1401,9 +1712,12 @@ export default function App() {
     const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId
     if (!taskId) return
 
-    setTasks(prev => prev.map(item => (
-      item.id === taskId ? { ...item, date: dateISO } : item
-    )))
+    setTasks(prev => {
+      const next = prev.map(item => (
+        item.id === taskId ? { ...item, date: dateISO } : item
+      ))
+      return reorderTasksForDate(next, dateISO)
+    })
     setDraggedTaskId(null)
   }
 
@@ -1426,7 +1740,15 @@ export default function App() {
   }
 
   function toggleTask(id) {
-    setTasks(prev => prev.map(item => item.id === id ? { ...item, completed: !item.completed } : item))
+    setTasks(prev => {
+      const target = prev.find(item => item.id === id)
+      if (!target) return prev
+
+      const next = prev.map(item => (
+        item.id === id ? { ...item, completed: !item.completed } : item
+      ))
+      return reorderTasksForDate(next, taskDateKey(target))
+    })
   }
 
   function deleteTask(id) {
@@ -1437,10 +1759,245 @@ export default function App() {
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
+  function updateDashboardMemo(value) {
+    localStorage.setItem(dashboardMemoKey, value)
+    setMemos(prev => ({ ...prev, [dashboardMemoKey]: value }))
+  }
+
+  function changeDashboardMonth(offset) {
+    setDashboardCalendarMonth(prev => {
+      const next = new Date(prev)
+      next.setMonth(next.getMonth() + offset)
+      return startOfMonth(next)
+    })
+  }
+
+  function selectDashboardDate(dateISO) {
+    setSelectedDashboardDate(dateISO)
+    setDashboardCopyMessage('')
+  }
+
+  function returnDashboardToToday() {
+    const todayISO = formatISO(new Date())
+    setSelectedDashboardDate(todayISO)
+    setDashboardCalendarMonth(startOfMonth(dateFromISO(todayISO)))
+    setDashboardCopyMessage('')
+  }
+
+  function changeMonthView(offset) {
+    const next = new Date(monthViewMonth)
+    next.setMonth(next.getMonth() + offset)
+    const nextMonth = startOfMonth(next)
+
+    setMonthViewMonth(nextMonth)
+    setSelectedMonthDate(prev => dateInMonth(nextMonth, dateFromISO(prev).getDate()))
+  }
+
+  function returnMonthViewToToday() {
+    const today = new Date()
+    setMonthViewMonth(startOfMonth(today))
+    setSelectedMonthDate(formatISO(today))
+  }
+
+  function selectMonthDate(dateISO) {
+    setSelectedMonthDate(dateISO)
+  }
+
+  function updateDashboardEventStart(startTime) {
+    setDashboardEventDraft(prev => {
+      const startMinutes = minutesFromTime(startTime)
+      const endMinutes = minutesFromTime(prev.endTime)
+      const nextEndTime = endMinutes > startMinutes
+        ? prev.endTime
+        : minutesToTime(Math.min(startMinutes + STEP_MINUTES, GRID_END_MINUTES))
+
+      return { ...prev, startTime, endTime: nextEndTime }
+    })
+  }
+
+  function updateMonthEventStart(startTime) {
+    setMonthEventDraft(prev => {
+      const startMinutes = minutesFromTime(startTime)
+      const endMinutes = minutesFromTime(prev.endTime)
+      const nextEndTime = endMinutes > startMinutes
+        ? prev.endTime
+        : minutesToTime(Math.min(startMinutes + STEP_MINUTES, GRID_END_MINUTES))
+
+      return { ...prev, startTime, endTime: nextEndTime }
+    })
+  }
+
+  function addDashboardEvent(e) {
+    e.preventDefault()
+    const title = dashboardEventDraft.title.trim()
+    if (!title) return
+
+    const normalizedTimes = normalizeEventTimeRange(
+      dashboardEventDraft.startTime,
+      dashboardEventDraft.endTime
+    )
+
+    saveEvent({
+      id: null,
+      date: selectedDashboardDate,
+      title,
+      ...normalizedTimes
+    })
+    setDashboardEventDraft(prev => ({ ...prev, title: '' }))
+    setDashboardCopyMessage('')
+  }
+
+  function addMonthEvent(e) {
+    e.preventDefault()
+    const title = monthEventDraft.title.trim()
+    if (!title) return
+
+    const normalizedTimes = normalizeEventTimeRange(
+      monthEventDraft.startTime,
+      monthEventDraft.endTime
+    )
+
+    saveEvent({
+      id: null,
+      date: selectedMonthDate,
+      title,
+      ...normalizedTimes
+    })
+    setMonthEventDraft(prev => ({ ...prev, title: '' }))
+  }
+
+  function addDashboardTask(e) {
+    e.preventDefault()
+    const title = dashboardTaskDraft.trim()
+    if (!title) return
+
+    setTasks(prev => [
+      ...prev,
+      {
+        id: createLocalId('task'),
+        date: selectedDashboardDate,
+        title,
+        completed: false
+      }
+    ])
+    setDashboardTaskDraft('')
+    setDashboardCopyMessage('')
+  }
+
+  function addMonthTask(e) {
+    e.preventDefault()
+    const title = monthTaskDraft.trim()
+    if (!title) return
+
+    setTasks(prev => [
+      ...prev,
+      {
+        id: createLocalId('task'),
+        date: selectedMonthDate,
+        title,
+        completed: false
+      }
+    ])
+    setMonthTaskDraft('')
+  }
+
+  function isEventInProgress(event) {
+    if (event.date !== currentDateISO) return false
+
+    const startMinutes = minutesFromTime(event.startTime)
+    const endMinutes = minutesFromTime(event.endTime)
+    return currentMinutes >= startMinutes && currentMinutes < endMinutes
+  }
+
+  function createDashboardText(dateISO = selectedDashboardDate) {
+    const dateLabel = dateFromISO(dateISO).toLocaleDateString('ja-JP', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })
+    const dateEvents = events
+      .filter(item => item.date === dateISO)
+      .map(normalizePlannerEvent)
+      .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
+    const dateTasks = tasks.filter(item => item.date === dateISO)
+    const dateMemo = memos[dashboardMemoStorageKey(dateISO)] || ''
+    const eventLines = dateEvents.length
+      ? dateEvents.map(event => `・${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`)
+      : ['・この日の予定はありません']
+    const taskLines = dateTasks.length
+      ? dateTasks.map(task => `${task.completed ? '☑' : '□'} ${task.title}`)
+      : ['□ この日のタスクはありません']
+    const memoLines = dateMemo.trim()
+      ? [dateMemo.trim()]
+      : ['メモはありません']
+
+    return [
+      `${dateLabel}の予定`,
+      '',
+      '【予定】',
+      ...eventLines,
+      '',
+      '【タスク】',
+      ...taskLines,
+      '',
+      '【メモ】',
+      ...memoLines
+    ].join('\n')
+  }
+
+  async function copyDashboardText() {
+    const text = createDashboardText(selectedDashboardDate)
+
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+      } else {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        textarea.setAttribute('readonly', '')
+        textarea.style.position = 'fixed'
+        textarea.style.left = '-9999px'
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+      setDashboardCopyMessage('LINE用テキストをコピーしました')
+    } catch (error) {
+      console.error('Dashboard text copy failed', error)
+      setDashboardCopyMessage('コピーに失敗しました')
+    }
+  }
+
   return (
     <div className="app-root">
       <header className="app-header">
-        <h1>週間プランナー</h1>
+        <div className="app-title-area">
+          <h1>週間プランナー</h1>
+          <div className="view-switch" aria-label="画面切り替え">
+            <button
+              type="button"
+              className={currentView === 'planner' ? 'active' : ''}
+              onClick={() => setCurrentView('planner')}
+            >
+              プランナー
+            </button>
+            <button
+              type="button"
+              className={currentView === 'dashboard' ? 'active' : ''}
+              onClick={() => setCurrentView('dashboard')}
+            >
+              ダッシュボード
+            </button>
+            <button
+              type="button"
+              className={currentView === 'month' ? 'active' : ''}
+              onClick={() => setCurrentView('month')}
+            >
+              月表示
+            </button>
+          </div>
+        </div>
         <div className="header-actions">
           <div className={`google-sync ${googleStatus}`}>
             <span className="google-dot" aria-hidden="true" />
@@ -1452,6 +2009,14 @@ export default function App() {
                 disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
               >
                 Google連携
+              </button>
+            ) : googleStatus === 'reauth' ? (
+              <button
+                type="button"
+                onClick={reauthenticateGoogleCalendar}
+                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
+              >
+                Google再認証
               </button>
             ) : (
               <button
@@ -1476,6 +2041,7 @@ export default function App() {
         </div>
       </header>
 
+      {currentView === 'planner' ? (
       <main className="planner-grid">
         <aside className="memo-panel">
           <div
@@ -1550,15 +2116,16 @@ export default function App() {
                     const dayEvents = eventsFor(iso)
                     const dayTasks = tasksFor(iso)
                     const tone = dayHeaderTone(day)
+                    const isToday = iso === currentDateISO
                     const isDragActive = dragSelection?.date === iso
                     const dragRange = isDragActive
                       ? eventRangeFromSelection(dragSelection.anchorMinutes, dragSelection.currentMinutes)
                       : null
                     return (
                       <div className={`day-column ${tone}`} key={iso}>
-                        <div className={`day-header ${tone}`}>
-                          <span>{day.toLocaleDateString('ja-JP', { weekday: 'short' })}</span>
-                          <strong>{day.getDate()}</strong>
+                        <div className={`day-header ${tone} ${isToday ? 'today' : ''}`}>
+                          <span className="day-name">{day.toLocaleDateString('ja-JP', { weekday: 'short' })}</span>
+                          <strong className="day-number">{day.getDate()}</strong>
                         </div>
                         <div className="day-body" onPointerDown={e => startCreateDrag(e, iso)}>
                           {HOURS.map(hour => (
@@ -1570,9 +2137,6 @@ export default function App() {
                               <span className="slot-hour-label" aria-hidden="true">{hour}</span>
                             </div>
                           ))}
-                          {currentTimeVisible && currentDateISO === iso && (
-                            <div className="current-time-line" style={{ top: currentTimeTop + 'px' }} />
-                          )}
                           {isDragActive && (
                             <div
                               className="drag-selection"
@@ -1588,14 +2152,13 @@ export default function App() {
                             const endMinutes = minutesFromTime(ev.endTime)
                             const top = gridTopFromMinutes(startMinutes)
                             const height = gridHeightFromMinutes(startMinutes, endMinutes)
-                            const visualGap = height >= 8 ? 2 : 0
                             return (
                               <div
                                 key={ev.id}
-                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''}`}
+                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''}`}
                                 style={{
-                                  top: top + visualGap / 2 + 'px',
-                                  height: Math.max(1, height - visualGap) + 'px'
+                                  top: top + 'px',
+                                  height: Math.max(1, height) + 'px'
                                 }}
                                 onClick={e => { e.stopPropagation(); openEdit(ev) }}
                               >
@@ -1657,6 +2220,356 @@ export default function App() {
             </div>
         </section>
       </main>
+      ) : currentView === 'dashboard' ? (
+      <main className="dashboard-view">
+        <section className="dashboard-top">
+          <div>
+            <span>日別ダッシュボード</span>
+            <strong>{selectedDashboardDateLabel}</strong>
+          </div>
+          <div className="dashboard-actions">
+            <div className="dashboard-actions-right">
+              <button type="button" onClick={copyDashboardText}>LINE用にコピー</button>
+              {dashboardCopyMessage && <p>{dashboardCopyMessage}</p>}
+            </div>
+          </div>
+        </section>
+
+        <section className="dashboard-layout">
+          <div className="dashboard-card">
+            <div className="mini-calendar-top">
+              <div className="mini-calendar-nav">
+                <button type="button" onClick={() => changeDashboardMonth(-1)}>&lt;</button>
+                <h2>{dashboardMonthLabel}</h2>
+                <button type="button" onClick={() => changeDashboardMonth(1)}>&gt;</button>
+              </div>
+              <button type="button" className="mini-calendar-today" onClick={returnDashboardToToday}>
+                今日に戻る
+              </button>
+            </div>
+            <div className="mini-calendar-weekdays">
+              {['月', '火', '水', '木', '金', '土', '日'].map(day => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className="mini-calendar-grid">
+              {dashboardCalendarCells.map((dateISO, index) => {
+                const isSelected = dateISO === selectedDashboardDate
+                const isToday = dateISO === currentDateISO
+
+                return dateISO ? (
+                  <button
+                    type="button"
+                    key={dateISO}
+                    className={`dashboard-calendar-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                    onClick={() => selectDashboardDate(dateISO)}
+                  >
+                    <span>{dateFromISO(dateISO).getDate()}</span>
+                  </button>
+                ) : (
+                  <span className="mini-calendar-empty" key={`empty-${index}`} />
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="dashboard-grid">
+            <div className="dashboard-card">
+              <h2>選択日の予定</h2>
+              <form className="dashboard-add-form dashboard-event-form" onSubmit={addDashboardEvent}>
+                <input
+                  type="text"
+                  value={dashboardEventDraft.title}
+                  onChange={e => setDashboardEventDraft(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="予定タイトル"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+                <div className="dashboard-time-inputs">
+                  <select
+                    value={dashboardEventDraft.startTime}
+                    onChange={e => updateDashboardEventStart(e.target.value)}
+                    aria-label="開始時間"
+                  >
+                    {START_TIME_OPTIONS.map(slot => (
+                      <option key={slot} value={slot}>{slot}</option>
+                    ))}
+                  </select>
+                  <span>〜</span>
+                  <select
+                    value={dashboardEventDraft.endTime}
+                    onChange={e => setDashboardEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
+                    aria-label="終了時間"
+                  >
+                    {dashboardEventEndOptions.map(slot => (
+                      <option key={slot} value={slot}>{slot}</option>
+                    ))}
+                  </select>
+                </div>
+                <button type="submit">追加</button>
+              </form>
+              {selectedDashboardEvents.length === 0 ? (
+                <p className="dashboard-empty">この日の予定はありません</p>
+              ) : (
+                <ul className="dashboard-list event-list">
+                  {selectedDashboardEvents.map(event => (
+                    <li key={event.id} className={`dashboard-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+                      <span className="dashboard-event-time">{event.startTime}〜{event.endTime}</span>
+                      <span>{event.title || '無題の予定'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="dashboard-card">
+              <h2>選択日のタスク</h2>
+              <form className="dashboard-add-form dashboard-task-form" onSubmit={addDashboardTask}>
+                <input
+                  type="text"
+                  value={dashboardTaskDraft}
+                  onChange={e => setDashboardTaskDraft(e.target.value)}
+                  placeholder="タスクタイトル"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+                <button type="submit">追加</button>
+              </form>
+              {selectedDashboardTasks.length === 0 ? (
+                <p className="dashboard-empty">この日のタスクはありません</p>
+              ) : (
+                <ul className="dashboard-list task-list">
+                  {selectedDashboardTasks.map(task => (
+                    <li key={task.id} className={task.completed ? 'completed' : ''}>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={task.completed}
+                          onChange={() => toggleTask(task.id)}
+                        />
+                        <span>{task.title}</span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="dashboard-card dashboard-memo-card">
+              <h2>選択日のメモ</h2>
+              <textarea
+                value={dashboardMemoText}
+                onChange={e => updateDashboardMemo(e.target.value)}
+                placeholder="この日のメモを書く..."
+              />
+            </div>
+          </div>
+        </section>
+      </main>
+      ) : (
+      <main className="month-view">
+        <aside className="month-sidebar">
+          <button type="button" className="month-today-button" onClick={returnMonthViewToToday}>
+            今日に戻る
+          </button>
+          <div className="month-sidebar-date">
+            <span>選択中</span>
+            <strong>{selectedMonthDateLabel}</strong>
+          </div>
+          <div className="month-mini-calendar" aria-label="月表示ミニカレンダー">
+            <div className="month-mini-header">
+              <button type="button" onClick={() => changeMonthView(-1)} aria-label="前月へ">
+                &lt;
+              </button>
+              <div className="month-mini-title">{monthViewTitle}</div>
+              <button type="button" onClick={() => changeMonthView(1)} aria-label="翌月へ">
+                &gt;
+              </button>
+            </div>
+            <div className="month-mini-weekdays">
+              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className="month-mini-grid">
+              {monthCalendarCells.map((dateISO, index) => {
+                if (!dateISO) {
+                  return <span className="month-mini-empty" key={`month-mini-empty-${index}`} />
+                }
+
+                const isToday = dateISO === currentDateISO
+                const isSelected = dateISO === selectedMonthDate
+
+                return (
+                  <button
+                    type="button"
+                    key={dateISO}
+                    className={`${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                    onClick={() => selectMonthDate(dateISO)}
+                  >
+                    {dateFromISO(dateISO).getDate()}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div className="month-sidebar-events">
+            <h3>{selectedMonthDateShortLabel}の予定</h3>
+            <form className="month-sidebar-event-form" onSubmit={addMonthEvent}>
+              <input
+                type="text"
+                value={monthEventDraft.title}
+                onChange={e => setMonthEventDraft(prev => ({ ...prev, title: e.target.value }))}
+                placeholder="予定タイトル"
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+              <div className="month-sidebar-event-time-row">
+                <select
+                  value={monthEventDraft.startTime}
+                  onChange={e => updateMonthEventStart(e.target.value)}
+                  aria-label="開始時間"
+                >
+                  {START_TIME_OPTIONS.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+                <span>〜</span>
+                <select
+                  value={monthEventDraft.endTime}
+                  onChange={e => setMonthEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
+                  aria-label="終了時間"
+                >
+                  {monthEventEndOptions.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+                <button type="submit">追加</button>
+              </div>
+            </form>
+            {selectedMonthEvents.length === 0 ? (
+              <p className="month-sidebar-empty">この日の予定はありません</p>
+            ) : (
+              <ul className="month-sidebar-event-list">
+                {selectedMonthEvents.map(event => (
+                  <li key={event.id} className={`month-sidebar-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+                    <span className="month-sidebar-event-time">{event.startTime}〜{event.endTime}</span>
+                    <span className="month-sidebar-event-title">{event.title || '無題の予定'}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </aside>
+
+        <div className="month-main">
+          <section className="month-calendar" aria-label="月表示カレンダー">
+            <div className="month-toolbar">
+              <div className="month-nav" aria-label="月移動">
+                <button type="button" onClick={() => changeMonthView(-1)}>&lt;</button>
+                <button type="button" onClick={() => changeMonthView(1)}>&gt;</button>
+              </div>
+              <h2>{monthViewTitle}</h2>
+            </div>
+
+            <div className="month-weekdays">
+              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+
+            <div className="month-grid">
+              {monthCalendarCells.map((dateISO, index) => {
+                if (!dateISO) {
+                  return <div className="month-day empty" key={`month-empty-${index}`} aria-hidden="true" />
+                }
+
+                const dayEvents = eventsFor(dateISO)
+                const isToday = dateISO === currentDateISO
+                const isSelected = dateISO === selectedMonthDate
+
+                return (
+                  <div
+                    key={dateISO}
+                    role="button"
+                    tabIndex={0}
+                    className={`month-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                    onClick={() => selectMonthDate(dateISO)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault()
+                        selectMonthDate(dateISO)
+                      }
+                    }}
+                  >
+                    <div className="month-date-row">
+                      <span className="month-date-number">{dateFromISO(dateISO).getDate()}</span>
+                    </div>
+
+                    <div className="month-day-events">
+                      {dayEvents.map(event => (
+                        <span className="month-event-pill" title={event.title || '無題の予定'} key={event.id}>
+                          {event.title || '無題の予定'}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+
+          <section className="month-detail" aria-live="polite">
+            <div className="month-detail-header">
+              <span>選択日のタスク</span>
+              <strong>{selectedMonthDateLabel}</strong>
+            </div>
+
+            <div className="month-detail-grid">
+              <div className="month-detail-card">
+                <div className="month-detail-card-head">
+                  <h3>タスク</h3>
+                  <form className="month-detail-add-form month-detail-task-form" onSubmit={addMonthTask}>
+                    <input
+                      type="text"
+                      value={monthTaskDraft}
+                      onChange={e => setMonthTaskDraft(e.target.value)}
+                      placeholder="タスクタイトル"
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      spellCheck={false}
+                    />
+                    <button type="submit">追加</button>
+                  </form>
+                </div>
+
+                {selectedMonthTasks.length === 0 ? (
+                  <p className="month-detail-empty">この日のタスクはありません</p>
+                ) : (
+                  <ul className="month-detail-list month-detail-tasks">
+                    {selectedMonthTasks.map(task => (
+                      <li key={task.id} className={task.completed ? 'completed' : ''}>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={task.completed}
+                            onChange={() => toggleTask(task.id)}
+                          />
+                          <span>{task.title}</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+      )}
 
       {activeReminders.length > 0 && (
         <div className="reminder-stack">
