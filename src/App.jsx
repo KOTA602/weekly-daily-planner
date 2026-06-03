@@ -921,7 +921,6 @@ export default function App() {
     startTime: '09:00',
     endTime: '10:00'
   })
-  const [monthTaskDraft, setMonthTaskDraft] = useState('')
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
@@ -1028,9 +1027,6 @@ export default function App() {
       .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedMonthDate])
-  const selectedMonthTasks = useMemo(() => (
-    sortTasksByCompletion(tasks.filter(item => item.date === selectedMonthDate))
-  ), [tasks, selectedMonthDate])
 
   useEffect(() => {
     dragSelectionRef.current = dragSelection
@@ -1884,23 +1880,6 @@ export default function App() {
     setDashboardCopyMessage('')
   }
 
-  function addMonthTask(e) {
-    e.preventDefault()
-    const title = monthTaskDraft.trim()
-    if (!title) return
-
-    setTasks(prev => [
-      ...prev,
-      {
-        id: createLocalId('task'),
-        date: selectedMonthDate,
-        title,
-        completed: false
-      }
-    ])
-    setMonthTaskDraft('')
-  }
-
   function isEventInProgress(event) {
     if (event.date !== currentDateISO) return false
 
@@ -2152,10 +2131,11 @@ export default function App() {
                             const endMinutes = minutesFromTime(ev.endTime)
                             const top = gridTopFromMinutes(startMinutes)
                             const height = gridHeightFromMinutes(startMinutes, endMinutes)
+                            const sizeClass = height < 14 ? 'short-event' : height < 24 ? 'compact-event' : ''
                             return (
                               <div
                                 key={ev.id}
-                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''}`}
+                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''} ${sizeClass}`}
                                 style={{
                                   top: top + 'px',
                                   height: Math.max(1, height) + 'px'
@@ -2165,7 +2145,6 @@ export default function App() {
                                 <div className="event-handle top" onPointerDown={e => startEventDrag(e, ev, 'resize-start')} />
                                 <div className="event-content" onPointerDown={e => startEventDrag(e, ev, 'move')}>
                                   <div className="ev-title">{ev.title}</div>
-                                  <div className="ev-time">{ev.startTime} - {ev.endTime}</div>
                                 </div>
                                 <div className="event-handle bottom" onPointerDown={e => startEventDrag(e, ev, 'resize-end')} />
                               </div>
@@ -2256,12 +2235,15 @@ export default function App() {
               {dashboardCalendarCells.map((dateISO, index) => {
                 const isSelected = dateISO === selectedDashboardDate
                 const isToday = dateISO === currentDateISO
+                const date = dateISO ? dateFromISO(dateISO) : null
+                const dayOfWeek = date?.getDay()
+                const weekendClass = dayOfWeek === 0 ? 'sunday' : dayOfWeek === 6 ? 'saturday' : ''
 
                 return dateISO ? (
                   <button
                     type="button"
                     key={dateISO}
-                    className={`dashboard-calendar-day ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
+                    className={`dashboard-calendar-day ${weekendClass} ${isSelected ? 'selected' : ''} ${isToday ? 'today' : ''}`}
                     onClick={() => selectDashboardDate(dateISO)}
                   >
                     <span>{dateFromISO(dateISO).getDate()}</span>
@@ -2401,15 +2383,18 @@ export default function App() {
 
                 const isToday = dateISO === currentDateISO
                 const isSelected = dateISO === selectedMonthDate
+                const date = dateFromISO(dateISO)
+                const dayOfWeek = date.getDay()
+                const weekendClass = dayOfWeek === 0 ? 'sunday' : dayOfWeek === 6 ? 'saturday' : ''
 
                 return (
                   <button
                     type="button"
                     key={dateISO}
-                    className={`${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                    className={`${weekendClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
                     onClick={() => selectMonthDate(dateISO)}
                   >
-                    {dateFromISO(dateISO).getDate()}
+                    {date.getDate()}
                   </button>
                 )
               })}
@@ -2490,13 +2475,16 @@ export default function App() {
                 const dayEvents = eventsFor(dateISO)
                 const isToday = dateISO === currentDateISO
                 const isSelected = dateISO === selectedMonthDate
+                const date = dateFromISO(dateISO)
+                const dayOfWeek = date.getDay()
+                const weekendClass = dayOfWeek === 0 ? 'sunday' : dayOfWeek === 6 ? 'saturday' : ''
 
                 return (
                   <div
                     key={dateISO}
                     role="button"
                     tabIndex={0}
-                    className={`month-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                    className={`month-day ${weekendClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
                     onClick={() => selectMonthDate(dateISO)}
                     onKeyDown={e => {
                       if (e.key === 'Enter' || e.key === ' ') {
@@ -2506,7 +2494,7 @@ export default function App() {
                     }}
                   >
                     <div className="month-date-row">
-                      <span className="month-date-number">{dateFromISO(dateISO).getDate()}</span>
+                      <span className="month-date-number">{date.getDate()}</span>
                     </div>
 
                     <div className="month-day-events">
@@ -2519,52 +2507,6 @@ export default function App() {
                   </div>
                 )
               })}
-            </div>
-          </section>
-
-          <section className="month-detail" aria-live="polite">
-            <div className="month-detail-header">
-              <span>選択日のタスク</span>
-              <strong>{selectedMonthDateLabel}</strong>
-            </div>
-
-            <div className="month-detail-grid">
-              <div className="month-detail-card">
-                <div className="month-detail-card-head">
-                  <h3>タスク</h3>
-                  <form className="month-detail-add-form month-detail-task-form" onSubmit={addMonthTask}>
-                    <input
-                      type="text"
-                      value={monthTaskDraft}
-                      onChange={e => setMonthTaskDraft(e.target.value)}
-                      placeholder="タスクタイトル"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                    />
-                    <button type="submit">追加</button>
-                  </form>
-                </div>
-
-                {selectedMonthTasks.length === 0 ? (
-                  <p className="month-detail-empty">この日のタスクはありません</p>
-                ) : (
-                  <ul className="month-detail-list month-detail-tasks">
-                    {selectedMonthTasks.map(task => (
-                      <li key={task.id} className={task.completed ? 'completed' : ''}>
-                        <label>
-                          <input
-                            type="checkbox"
-                            checked={task.completed}
-                            onChange={() => toggleTask(task.id)}
-                          />
-                          <span>{task.title}</span>
-                        </label>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
             </div>
           </section>
         </div>
