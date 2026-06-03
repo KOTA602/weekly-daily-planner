@@ -15,6 +15,7 @@ const GOOGLE_EVENTS_SCOPE = 'https://www.googleapis.com/auth/calendar.events'
 const GOOGLE_SCOPES = GOOGLE_EVENTS_SCOPE
 const GOOGLE_TIME_ZONE = 'Asia/Tokyo'
 const GOOGLE_EVENTS_URL = 'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+const UNDO_STACK_LIMIT = 50
 const GOOGLE_CONFIG = {
   clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
   apiKey: import.meta.env.VITE_GOOGLE_API_KEY || ''
@@ -638,28 +639,113 @@ function taskDateKey(task) {
   return task.date || UNDATED_TASK_DATE
 }
 
-function sortTasksByCompletion(tasks) {
+function removeTaskDate(task) {
+  const nextTask = { ...task }
+  delete nextTask.date
+  return nextTask
+}
+
+function cloneUndoData(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function taskOrderValue(task, fallbackIndex = 0) {
+  const order = Number(task.order)
+  return Number.isFinite(order) ? order : (fallbackIndex + 1) * 1000
+}
+
+function sortTasksByOrder(tasks) {
   return tasks
     .map((task, index) => ({ task, index }))
     .sort((a, b) => {
-      if (a.task.completed !== b.task.completed) {
-        return a.task.completed ? -1 : 1
-      }
+      const orderDiff = taskOrderValue(a.task, a.index) - taskOrderValue(b.task, b.index)
+      if (orderDiff !== 0) return orderDiff
       return a.index - b.index
     })
     .map(item => item.task)
 }
 
-function reorderTasksForDate(tasks, dateISO) {
-  const sameDateTasks = sortTasksByCompletion(tasks.filter(task => taskDateKey(task) === dateISO))
-  let sameDateIndex = 0
+function normalizeTasks(tasks) {
+  if (!Array.isArray(tasks)) return []
+  const counters = new Map()
 
   return tasks.map(task => {
-    if (taskDateKey(task) !== dateISO) return task
-    const nextTask = sameDateTasks[sameDateIndex]
-    sameDateIndex += 1
-    return nextTask
+    const key = taskDateKey(task)
+    const count = counters.get(key) || 0
+    counters.set(key, count + 1)
+    const order = taskOrderValue(task, count)
+    return {
+      ...task,
+      id: task.id || createLocalId('task'),
+      title: task.title || '',
+      completed: Boolean(task.completed),
+      order
+    }
   })
+}
+
+function nextTaskOrder(tasks, dateISO) {
+  const orders = tasks
+    .filter(task => taskDateKey(task) === dateISO)
+    .map((task, index) => taskOrderValue(task, index))
+
+  return orders.length ? Math.max(...orders) + 1000 : 1000
+}
+
+function tasksWithReorderedGroup(tasks, dateISO, orderedGroup) {
+  const orderedIds = new Set(orderedGroup.map(task => task.id))
+  const otherTasks = tasks.filter(task => taskDateKey(task) !== dateISO && !orderedIds.has(task.id))
+  const groupWithOrder = orderedGroup.map((task, index) => ({
+    ...task,
+    order: (index + 1) * 1000
+  }))
+
+  return [...otherTasks, ...groupWithOrder]
+}
+
+function moveTaskInList(tasks, taskId, targetDateISO, beforeTaskId = null) {
+  const movingTask = tasks.find(task => task.id === taskId)
+  if (!movingTask) return { tasks, changed: false }
+
+  const movingDateISO = taskDateKey(movingTask)
+  if (beforeTaskId === taskId) {
+    return { tasks, changed: false }
+  }
+  if (movingDateISO === targetDateISO && !beforeTaskId) {
+    const sameDateTasks = sortTasksByOrder(tasks.filter(task => taskDateKey(task) === targetDateISO))
+    if (sameDateTasks[sameDateTasks.length - 1]?.id === taskId) {
+      return { tasks, changed: false }
+    }
+  }
+  if (movingDateISO === targetDateISO && beforeTaskId) {
+    const sameDateTasks = sortTasksByOrder(tasks.filter(task => taskDateKey(task) === targetDateISO))
+    const movingIndex = sameDateTasks.findIndex(task => task.id === taskId)
+    const beforeIndex = sameDateTasks.findIndex(task => task.id === beforeTaskId)
+    if (movingIndex >= 0 && beforeIndex === movingIndex + 1) {
+      return { tasks, changed: false }
+    }
+  }
+  if (movingDateISO !== targetDateISO && beforeTaskId === taskId) {
+    return { tasks, changed: false }
+  }
+
+  const targetGroup = sortTasksByOrder(tasks.filter(task => (
+    task.id !== taskId && taskDateKey(task) === targetDateISO
+  )))
+  const movedTask = targetDateISO === UNDATED_TASK_DATE
+    ? removeTaskDate(movingTask)
+    : { ...movingTask, date: targetDateISO }
+  const insertIndex = beforeTaskId
+    ? targetGroup.findIndex(task => task.id === beforeTaskId)
+    : targetGroup.length
+  const safeInsertIndex = insertIndex < 0 ? targetGroup.length : insertIndex
+  const nextGroup = [...targetGroup]
+  nextGroup.splice(safeInsertIndex, 0, movedTask)
+
+  return {
+    tasks: tasksWithReorderedGroup(tasks.filter(task => task.id !== taskId), targetDateISO, nextGroup),
+    changed: true
+  }
 }
 
 function defaultEvents() {
@@ -675,7 +761,7 @@ function defaultEvents() {
 function defaultTasks() {
   try {
     const raw = localStorage.getItem(TASK_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
+    return raw ? normalizeTasks(JSON.parse(raw)) : []
   } catch {
     return []
   }
@@ -880,12 +966,18 @@ export default function App() {
   const [events, setEvents] = useState(() => defaultEvents())
   const [tasks, setTasks] = useState(() => defaultTasks())
   const [memos, setMemos] = useState(() => defaultMemos())
+  const [, setUndoStack] = useState([])
   const [editing, setEditing] = useState(null)
   const [dragSelection, setDragSelection] = useState(null)
   const [dragState, setDragState] = useState(null)
   const [draggedTaskId, setDraggedTaskId] = useState(null)
+  const [dragOverTaskId, setDragOverTaskId] = useState(null)
+  const [dragOverTaskEndDate, setDragOverTaskEndDate] = useState(null)
   const dragSelectionBodyRef = useRef(null)
   const dragSelectionRef = useRef(null)
+  const draggedTaskIdRef = useRef(null)
+  const undoStackRef = useRef([])
+  const undoActionRef = useRef(null)
   const [now, setNow] = useState(new Date())
   const [taskDrafts, setTaskDrafts] = useState({})
   const [firedReminders, setFiredReminders] = useState(() => defaultFiredReminders())
@@ -943,14 +1035,14 @@ export default function App() {
   const weekLabel = `${weekDates[0].getFullYear()}年${weekDates[0].getMonth() + 1}月${weekDates[0].getDate()}日〜${weekDates[6].getMonth() + 1}月${weekDates[6].getDate()}日`
   const currentDateISO = formatISO(now)
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
-  const dashboardMemoKey = dashboardMemoStorageKey(selectedDashboardDate)
-  const dashboardMemoText = memos[dashboardMemoKey] || ''
   const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long',
     day: 'numeric',
     weekday: 'long'
   })
+  const dashboardMemoKey = dashboardMemoStorageKey(selectedDashboardDate)
+  const dashboardMemoText = memos[dashboardMemoKey] || ''
   const dashboardMonthLabel = dashboardCalendarMonth.toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long'
@@ -962,8 +1054,12 @@ export default function App() {
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedDashboardDate])
   const selectedDashboardTasks = useMemo(() => (
-    sortTasksByCompletion(tasks.filter(item => item.date === selectedDashboardDate))
+    sortTasksByOrder(tasks.filter(item => item.date === selectedDashboardDate))
   ), [tasks, selectedDashboardDate])
+  const draggedTask = useMemo(() => (
+    tasks.find(item => item.id === draggedTaskId) || null
+  ), [tasks, draggedTaskId])
+  const canDropTaskToSelectedDate = Boolean(draggedTask && taskDateKey(draggedTask) !== selectedDashboardDate)
   const dashboardCalendarCells = useMemo(() => {
     const year = dashboardCalendarMonth.getFullYear()
     const month = dashboardCalendarMonth.getMonth()
@@ -1027,6 +1123,93 @@ export default function App() {
       .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedMonthDate])
+
+  function createUndoSnapshot() {
+    return {
+      events: cloneUndoData(events),
+      tasks: cloneUndoData(tasks),
+      memos: cloneUndoData(memos),
+      centerDateISO: formatISO(centerDate),
+      selectedDashboardDate,
+      dashboardCalendarMonthISO: formatISO(dashboardCalendarMonth),
+      monthViewMonthISO: formatISO(monthViewMonth),
+      selectedMonthDate,
+      currentView
+    }
+  }
+
+  function saveUndoSnapshot() {
+    const snapshot = createUndoSnapshot()
+    setUndoStack(prev => {
+      const next = [...prev, snapshot].slice(-UNDO_STACK_LIMIT)
+      undoStackRef.current = next
+      return next
+    })
+  }
+
+  function performUndo() {
+    const stack = undoStackRef.current
+    if (!stack.length) return
+
+    const snapshot = stack[stack.length - 1]
+    const nextStack = stack.slice(0, -1)
+    const restoredEvents = cloneUndoData(snapshot.events)
+    const restoredTasks = cloneUndoData(snapshot.tasks)
+    const restoredMemos = cloneUndoData(snapshot.memos)
+
+    undoStackRef.current = nextStack
+    setUndoStack(nextStack)
+    eventsRef.current = restoredEvents
+    setEvents(restoredEvents)
+    setTasks(restoredTasks)
+    setMemos(restoredMemos)
+    setCenterDate(startOfWeek(dateFromISO(snapshot.centerDateISO)))
+    setSelectedDashboardDate(snapshot.selectedDashboardDate)
+    setDashboardCalendarMonth(startOfMonth(dateFromISO(snapshot.dashboardCalendarMonthISO)))
+    setMonthViewMonth(startOfMonth(dateFromISO(snapshot.monthViewMonthISO)))
+    setSelectedMonthDate(snapshot.selectedMonthDate)
+    setCurrentView(snapshot.currentView || 'planner')
+    setEditing(null)
+    setDragState(null)
+    setDragSelection(null)
+    draggedTaskIdRef.current = null
+    setDraggedTaskId(null)
+    setDragOverTaskId(null)
+    setDragOverTaskEndDate(null)
+    setDashboardCopyMessage('')
+  }
+
+  useEffect(() => {
+    undoActionRef.current = performUndo
+  })
+
+  useEffect(() => {
+    function handleUndoShortcut(e) {
+      const key = e.key.toLowerCase()
+      const isUndo = (e.metaKey || e.ctrlKey) && !e.shiftKey && key === 'z'
+      if (!isUndo || undoStackRef.current.length === 0) return
+
+      e.preventDefault()
+      undoActionRef.current?.()
+    }
+
+    window.addEventListener('keydown', handleUndoShortcut)
+    return () => window.removeEventListener('keydown', handleUndoShortcut)
+  }, [])
+
+  useEffect(() => {
+    function clearPrimedTaskAfterPointerUp() {
+      window.setTimeout(() => {
+        draggedTaskIdRef.current = null
+        setDraggedTaskId(null)
+        setDragOverTaskId(null)
+        setDragOverTaskEndDate(null)
+      }, 0)
+    }
+
+    window.addEventListener('pointerup', clearPrimedTaskAfterPointerUp)
+    return () => window.removeEventListener('pointerup', clearPrimedTaskAfterPointerUp)
+  }, [])
 
   useEffect(() => {
     dragSelectionRef.current = dragSelection
@@ -1191,6 +1374,7 @@ export default function App() {
       ...normalizeEventTimeRange(ev.startTime, ev.endTime)
     }
     const isNewEvent = !ev.id
+    saveUndoSnapshot()
 
     if (!isNewEvent) {
       setEvents(prev => prev.map(item => (item.id === ev.id ? normalizedEvent : item)))
@@ -1218,6 +1402,8 @@ export default function App() {
 
   function deleteEvent(id) {
     const event = eventsRef.current.find(item => item.id === id)
+    if (!event) return
+    saveUndoSnapshot()
     setEvents(prev => prev.filter(item => item.id !== id))
     setEditing(null)
 
@@ -1640,6 +1826,7 @@ export default function App() {
     e.preventDefault()
     const dayBody = e.currentTarget.closest('.day-body')
     if (!dayBody) return
+    saveUndoSnapshot()
     setDragState({
       type,
       eventId: ev.id,
@@ -1673,11 +1860,11 @@ export default function App() {
   }
 
   function tasksFor(dateISO) {
-    return sortTasksByCompletion(tasks.filter(item => item.date === dateISO))
+    return sortTasksByOrder(tasks.filter(item => item.date === dateISO))
   }
 
   function undatedTasks() {
-    return sortTasksByCompletion(tasks.filter(item => !item.date || item.date === UNDATED_TASK_DATE))
+    return sortTasksByOrder(tasks.filter(item => !item.date || item.date === UNDATED_TASK_DATE))
   }
 
   function updateTaskDraft(dateISO, value) {
@@ -1687,34 +1874,138 @@ export default function App() {
   function addTask(dateISO) {
     const title = (taskDrafts[dateISO] || '').trim()
     if (!title) return
+    saveUndoSnapshot()
     const id = createLocalId('task')
-    setTasks(prev => [...prev, { id, date: dateISO, title, completed: false }])
+    setTasks(prev => {
+      const task = dateISO === UNDATED_TASK_DATE
+        ? { id, title, completed: false, order: nextTaskOrder(prev, dateISO) }
+        : { id, date: dateISO, title, completed: false, order: nextTaskOrder(prev, dateISO) }
+      return [...prev, task]
+    })
     updateTaskDraft(dateISO, '')
   }
 
-  function startTaskDrag(e, taskId) {
+  function setActiveDraggedTask(taskId) {
+    draggedTaskIdRef.current = taskId
     setDraggedTaskId(taskId)
+  }
+
+  function clearActiveDraggedTask() {
+    draggedTaskIdRef.current = null
+    setDraggedTaskId(null)
+    setDragOverTaskId(null)
+    setDragOverTaskEndDate(null)
+  }
+
+  function primeTaskMove(e, taskId) {
+    if (e.button !== undefined && e.button !== 0) return
+    if (e.target.closest('button, input')) return
+    setActiveDraggedTask(taskId)
+  }
+
+  function startTaskDrag(e, taskId) {
+    e.stopPropagation()
+    setActiveDraggedTask(taskId)
     e.dataTransfer.effectAllowed = 'move'
+    const task = tasks.find(item => item.id === taskId)
+    const source = taskDateKey(task || {}) === UNDATED_TASK_DATE ? 'unscheduled' : 'scheduled'
+    e.dataTransfer.setData('taskId', taskId)
+    e.dataTransfer.setData('source', source)
+    e.dataTransfer.setData('application/x-weekly-daily-task', taskId)
     e.dataTransfer.setData('text/plain', taskId)
+    e.dataTransfer.setData('text', taskId)
   }
 
   function allowTaskDrop(e) {
     e.preventDefault()
+    e.stopPropagation()
     e.dataTransfer.dropEffect = 'move'
+  }
+
+  function moveTaskById(taskId, dateISO) {
+    if (!taskId) return
+    const task = tasks.find(item => item.id === taskId)
+    if (!task) {
+      clearActiveDraggedTask()
+      return
+    }
+    const result = moveTaskInList(tasks, taskId, dateISO)
+    if (!result.changed) {
+      clearActiveDraggedTask()
+      return
+    }
+
+    saveUndoSnapshot()
+    setTasks(result.tasks)
+    clearActiveDraggedTask()
   }
 
   function moveTaskToDate(e, dateISO) {
     e.preventDefault()
-    const taskId = e.dataTransfer.getData('text/plain') || draggedTaskId
+    e.stopPropagation()
+    const taskId = e.dataTransfer.getData('taskId')
+      || e.dataTransfer.getData('application/x-weekly-daily-task')
+      || e.dataTransfer.getData('text/plain')
+      || e.dataTransfer.getData('text')
+      || draggedTaskIdRef.current
+      || draggedTaskId
+    moveTaskById(taskId, dateISO)
+  }
+
+  function moveTaskBeforeTask(e, targetTaskId, targetDateISO) {
+    e.preventDefault()
+    e.stopPropagation()
+    const taskId = e.dataTransfer.getData('taskId')
+      || e.dataTransfer.getData('application/x-weekly-daily-task')
+      || e.dataTransfer.getData('text/plain')
+      || e.dataTransfer.getData('text')
+      || draggedTaskIdRef.current
+      || draggedTaskId
+    if (!taskId || taskId === targetTaskId) {
+      clearActiveDraggedTask()
+      return
+    }
+
+    const result = moveTaskInList(tasks, taskId, targetDateISO, targetTaskId)
+    if (!result.changed) {
+      clearActiveDraggedTask()
+      return
+    }
+
+    saveUndoSnapshot()
+    setTasks(result.tasks)
+    clearActiveDraggedTask()
+  }
+
+  function markTaskDragOver(e, targetTaskId) {
+    allowTaskDrop(e)
+    if (draggedTaskId && draggedTaskId !== targetTaskId) {
+      setDragOverTaskId(targetTaskId)
+      setDragOverTaskEndDate(null)
+    }
+  }
+
+  function markTaskEndDragOver(e, dateISO) {
+    allowTaskDrop(e)
+    if (draggedTaskId) {
+      setDragOverTaskId(null)
+      setDragOverTaskEndDate(dateISO)
+    }
+  }
+
+  function dropPrimedTaskToDate(e, dateISO) {
+    const taskId = draggedTaskIdRef.current || draggedTaskId
     if (!taskId) return
 
-    setTasks(prev => {
-      const next = prev.map(item => (
-        item.id === taskId ? { ...item, date: dateISO } : item
-      ))
-      return reorderTasksForDate(next, dateISO)
-    })
-    setDraggedTaskId(null)
+    e.preventDefault()
+    e.stopPropagation()
+    const task = tasks.find(item => item.id === taskId)
+    if (!task || taskDateKey(task) === dateISO) {
+      clearActiveDraggedTask()
+      return
+    }
+
+    moveTaskById(taskId, dateISO)
   }
 
   async function requestNotificationPermission() {
@@ -1736,26 +2027,31 @@ export default function App() {
   }
 
   function toggleTask(id) {
+    const target = tasks.find(item => item.id === id)
+    if (!target) return
+    saveUndoSnapshot()
     setTasks(prev => {
-      const target = prev.find(item => item.id === id)
-      if (!target) return prev
-
-      const next = prev.map(item => (
+      return prev.map(item => (
         item.id === id ? { ...item, completed: !item.completed } : item
       ))
-      return reorderTasksForDate(next, taskDateKey(target))
     })
   }
 
   function deleteTask(id) {
+    if (!tasks.some(item => item.id === id)) return
+    saveUndoSnapshot()
     setTasks(prev => prev.filter(item => item.id !== id))
   }
 
   function updateMemo(value) {
+    if ((memos[SHARED_MEMO_KEY] || '') === value) return
+    saveUndoSnapshot()
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
   function updateDashboardMemo(value) {
+    if ((memos[dashboardMemoKey] || '') === value) return
+    saveUndoSnapshot()
     localStorage.setItem(dashboardMemoKey, value)
     setMemos(prev => ({ ...prev, [dashboardMemoKey]: value }))
   }
@@ -1867,13 +2163,15 @@ export default function App() {
     const title = dashboardTaskDraft.trim()
     if (!title) return
 
+    saveUndoSnapshot()
     setTasks(prev => [
       ...prev,
       {
         id: createLocalId('task'),
         date: selectedDashboardDate,
         title,
-        completed: false
+        completed: false,
+        order: nextTaskOrder(prev, selectedDashboardDate)
       }
     ])
     setDashboardTaskDraft('')
@@ -1898,7 +2196,7 @@ export default function App() {
       .filter(item => item.date === dateISO)
       .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
-    const dateTasks = tasks.filter(item => item.date === dateISO)
+    const dateTasks = sortTasksByOrder(tasks.filter(item => item.date === dateISO))
     const dateMemo = memos[dashboardMemoStorageKey(dateISO)] || ''
     const eventLines = dateEvents.length
       ? dateEvents.map(event => `・${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`)
@@ -1906,22 +2204,22 @@ export default function App() {
     const taskLines = dateTasks.length
       ? dateTasks.map(task => `${task.completed ? '☑' : '□'} ${task.title}`)
       : ['□ この日のタスクはありません']
-    const memoLines = dateMemo.trim()
-      ? [dateMemo.trim()]
-      : ['メモはありません']
 
-    return [
+    const lines = [
       `${dateLabel}の予定`,
       '',
       '【予定】',
       ...eventLines,
       '',
       '【タスク】',
-      ...taskLines,
-      '',
-      '【メモ】',
-      ...memoLines
-    ].join('\n')
+      ...taskLines
+    ]
+
+    if (dateMemo.trim()) {
+      lines.push('', '【メモ】', dateMemo.trim())
+    }
+
+    return lines.join('\n')
   }
 
   async function copyDashboardText() {
@@ -2028,16 +2326,21 @@ export default function App() {
             onDragOver={allowTaskDrop}
             onDrop={e => moveTaskToDate(e, UNDATED_TASK_DATE)}
           >
-            <div className="tasks-label">無期限タスク</div>
+            <div className="tasks-label">無制限タスク</div>
             <div className="tasks-list">
               {undatedTasks().length === 0 && <div className="no-tasks">タスクなし</div>}
               {undatedTasks().map(task => (
                 <div
                   key={task.id}
-                  className={`task-item ${task.completed ? 'completed' : ''} ${draggedTaskId === task.id ? 'dragging' : ''}`}
+                  className={`task-item ${task.completed ? 'completed' : ''} ${draggedTaskId === task.id ? 'dragging' : ''} ${dragOverTaskId === task.id && draggedTaskId !== task.id ? 'drag-over' : ''}`}
                   draggable
+                  data-task-id={task.id}
+                  onPointerDown={e => primeTaskMove(e, task.id)}
                   onDragStart={e => startTaskDrag(e, task.id)}
-                  onDragEnd={() => setDraggedTaskId(null)}
+                  onDragOver={e => markTaskDragOver(e, task.id)}
+                  onDragLeave={() => setDragOverTaskId(null)}
+                  onDrop={e => moveTaskBeforeTask(e, task.id, UNDATED_TASK_DATE)}
+                  onDragEnd={clearActiveDraggedTask}
                 >
                   <label>
                     <input
@@ -2050,6 +2353,13 @@ export default function App() {
                   <button className="task-delete" onClick={() => deleteTask(task.id)}>×</button>
                 </div>
               ))}
+              <div
+                className={`task-drop-end ${dragOverTaskEndDate === UNDATED_TASK_DATE ? 'drag-over' : ''}`}
+                onDragOver={e => markTaskEndDragOver(e, UNDATED_TASK_DATE)}
+                onDragLeave={() => setDragOverTaskEndDate(null)}
+                onDrop={e => moveTaskToDate(e, UNDATED_TASK_DATE)}
+                aria-hidden="true"
+              />
             </div>
             <div className="task-add">
               <input
@@ -2121,24 +2431,28 @@ export default function App() {
                               className="drag-selection"
                               style={{
                                 top: gridTopFromMinutes(dragRange.startMinutes) + 'px',
-                                height: gridHeightFromMinutes(dragRange.startMinutes, dragRange.endMinutes) + 'px'
+                                height: gridHeightFromMinutes(dragRange.startMinutes, dragRange.endMinutes) + 'px',
+                                '--event-grid-offset': -gridTopFromMinutes(dragRange.startMinutes) + 'px'
                               }}
                             />
                           )}
 
-                          {dayEvents.map(ev => {
+                          {dayEvents.map((ev, index) => {
+                            const previousEvent = dayEvents[index - 1]
                             const startMinutes = minutesFromTime(ev.startTime)
                             const endMinutes = minutesFromTime(ev.endTime)
                             const top = gridTopFromMinutes(startMinutes)
                             const height = gridHeightFromMinutes(startMinutes, endMinutes)
                             const sizeClass = height < 14 ? 'short-event' : height < 24 ? 'compact-event' : ''
+                            const connectedClass = previousEvent?.endTime === ev.startTime ? 'connected-top' : ''
                             return (
                               <div
                                 key={ev.id}
-                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''} ${sizeClass}`}
+                                className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''} ${sizeClass} ${connectedClass}`}
                                 style={{
                                   top: top + 'px',
-                                  height: Math.max(1, height) + 'px'
+                                  height: Math.max(1, height) + 'px',
+                                  '--event-grid-offset': -top + 'px'
                                 }}
                                 onClick={e => { e.stopPropagation(); openEdit(ev) }}
                               >
@@ -2163,10 +2477,15 @@ export default function App() {
                             {dayTasks.map(task => (
                               <div
                                 key={task.id}
-                                className={`task-item ${task.completed ? 'completed' : ''} ${draggedTaskId === task.id ? 'dragging' : ''}`}
+                                className={`task-item ${task.completed ? 'completed' : ''} ${draggedTaskId === task.id ? 'dragging' : ''} ${dragOverTaskId === task.id && draggedTaskId !== task.id ? 'drag-over' : ''}`}
                                 draggable
+                                data-task-id={task.id}
+                                onPointerDown={e => primeTaskMove(e, task.id)}
                                 onDragStart={e => startTaskDrag(e, task.id)}
-                                onDragEnd={() => setDraggedTaskId(null)}
+                                onDragOver={e => markTaskDragOver(e, task.id)}
+                                onDragLeave={() => setDragOverTaskId(null)}
+                                onDrop={e => moveTaskBeforeTask(e, task.id, iso)}
+                                onDragEnd={clearActiveDraggedTask}
                               >
                                 <label>
                                   <input
@@ -2179,6 +2498,13 @@ export default function App() {
                                 <button className="task-delete" onClick={() => deleteTask(task.id)}>×</button>
                               </div>
                             ))}
+                            <div
+                              className={`task-drop-end ${dragOverTaskEndDate === iso ? 'drag-over' : ''}`}
+                              onDragOver={e => markTaskEndDragOver(e, iso)}
+                              onDragLeave={() => setDragOverTaskEndDate(null)}
+                              onDrop={e => moveTaskToDate(e, iso)}
+                              aria-hidden="true"
+                            />
                           </div>
                           <div className="task-add">
                             <input
@@ -2305,38 +2631,81 @@ export default function App() {
               )}
             </div>
 
-            <div className="dashboard-card">
+            <div
+              className="dashboard-card dashboard-tasks-card"
+              onDragEnter={allowTaskDrop}
+              onDragOver={allowTaskDrop}
+              onDrop={e => moveTaskToDate(e, selectedDashboardDate)}
+              onPointerUp={e => dropPrimedTaskToDate(e, selectedDashboardDate)}
+            >
               <h2>選択日のタスク</h2>
-              <form className="dashboard-add-form dashboard-task-form" onSubmit={addDashboardTask}>
-                <input
-                  type="text"
-                  value={dashboardTaskDraft}
-                  onChange={e => setDashboardTaskDraft(e.target.value)}
-                  placeholder="タスクタイトル"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                />
-                <button type="submit">追加</button>
-              </form>
-              {selectedDashboardTasks.length === 0 ? (
-                <p className="dashboard-empty">この日のタスクはありません</p>
-              ) : (
-                <ul className="dashboard-list task-list">
-                  {selectedDashboardTasks.map(task => (
-                    <li key={task.id} className={task.completed ? 'completed' : ''}>
-                      <label>
-                        <input
-                          type="checkbox"
-                          checked={task.completed}
-                          onChange={() => toggleTask(task.id)}
-                        />
-                        <span>{task.title}</span>
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
+              <div
+                className={`dashboard-task-section dashboard-task-dropzone ${canDropTaskToSelectedDate ? 'drag-over' : ''}`}
+                onDragOver={allowTaskDrop}
+                onDrop={e => moveTaskToDate(e, selectedDashboardDate)}
+                onPointerUp={e => dropPrimedTaskToDate(e, selectedDashboardDate)}
+              >
+                {canDropTaskToSelectedDate && (
+                  <p className="dashboard-drop-hint">ここにドロップしてこの日のタスクにする</p>
+                )}
+                <form className="dashboard-add-form dashboard-task-form" onSubmit={addDashboardTask}>
+                  <input
+                    type="text"
+                    value={dashboardTaskDraft}
+                    onChange={e => setDashboardTaskDraft(e.target.value)}
+                    placeholder="タスクタイトル"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit">追加</button>
+                </form>
+                {selectedDashboardTasks.length === 0 ? (
+                  <p className="dashboard-empty">この日のタスクはありません</p>
+                ) : (
+                  <ul className="dashboard-list task-list dashboard-task-list">
+                    {selectedDashboardTasks.map(task => (
+                      <li
+                        key={task.id}
+                        className={`dashboard-task-row ${task.completed ? 'completed' : ''} ${draggedTaskId === task.id ? 'dragging' : ''} ${dragOverTaskId === task.id && draggedTaskId !== task.id ? 'drag-over' : ''}`}
+                        draggable
+                        data-task-id={task.id}
+                        onPointerDown={e => primeTaskMove(e, task.id)}
+                        onDragStart={e => startTaskDrag(e, task.id)}
+                        onDragOver={e => markTaskDragOver(e, task.id)}
+                        onDragLeave={() => setDragOverTaskId(null)}
+                        onDrop={e => moveTaskBeforeTask(e, task.id, selectedDashboardDate)}
+                        onDragEnd={clearActiveDraggedTask}
+                      >
+                        <label draggable onDragStart={e => startTaskDrag(e, task.id)}>
+                          <input
+                            type="checkbox"
+                            checked={task.completed}
+                            onChange={() => toggleTask(task.id)}
+                          />
+                          <span className="dashboard-task-title">{task.title}</span>
+                        </label>
+                        <button
+                          type="button"
+                          className="task-delete dashboard-task-delete"
+                          draggable={false}
+                          onClick={() => deleteTask(task.id)}
+                          aria-label={`${task.title}を削除`}
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                    <li
+                      className={`task-drop-end dashboard-task-drop-end ${dragOverTaskEndDate === selectedDashboardDate ? 'drag-over' : ''}`}
+                      onDragOver={e => markTaskEndDragOver(e, selectedDashboardDate)}
+                      onDragLeave={() => setDragOverTaskEndDate(null)}
+                      onDrop={e => moveTaskToDate(e, selectedDashboardDate)}
+                      aria-hidden="true"
+                    />
+                  </ul>
+                )}
+              </div>
             </div>
 
             <div className="dashboard-card dashboard-memo-card">
