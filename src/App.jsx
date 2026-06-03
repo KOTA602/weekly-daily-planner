@@ -56,8 +56,14 @@ const TIME_LABELS = HOURS.map(hour => {
   return `${String(hour).padStart(2, '0')}:00`
 })
 const ROW_HEIGHT = 23 // px per hour
+const STEP_MINUTES = 5
+const STEPS_PER_HOUR = 60 / STEP_MINUTES
 const GRID_START_MINUTES = 5 * 60
 const GRID_END_MINUTES = 24 * 60
+const TIME_OPTIONS = Array.from(
+  { length: (GRID_END_MINUTES - GRID_START_MINUTES) / STEP_MINUTES + 1 },
+  (_, i) => minutesToTime(GRID_START_MINUTES + i * STEP_MINUTES)
+)
 const DEFAULT_EVENT_REMINDER_OFFSETS = [30, 10, 5]
 const EVENT_REMINDER_CHOICES = [
   { value: 60, label: '1時間前' },
@@ -66,6 +72,64 @@ const EVENT_REMINDER_CHOICES = [
   { value: 5, label: '5分前' }
 ]
 const REMINDER_GRACE_MS = 90 * 1000
+
+function snapToStep(minutes) {
+  return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
+}
+
+function clampGridMinutes(minutes, min = GRID_START_MINUTES, max = GRID_END_MINUTES) {
+  return clamp(snapToStep(minutes), min, max)
+}
+
+function gridTopFromMinutes(minutes) {
+  return ((minutes - GRID_START_MINUTES) / 60) * ROW_HEIGHT
+}
+
+function gridHeightFromMinutes(startMinutes, endMinutes) {
+  return ((endMinutes - startMinutes) / 60) * ROW_HEIGHT
+}
+
+function minutesFromPointer(e, element) {
+  const rect = element.getBoundingClientRect()
+  const y = e.clientY - rect.top + element.scrollTop
+  const minutesFromStart = (y / ROW_HEIGHT) * 60
+  return clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
+}
+
+function eventRangeFromSelection(anchorMinutes, currentMinutes) {
+  let startMinutes = Math.min(anchorMinutes, currentMinutes)
+  let endMinutes = Math.max(anchorMinutes, currentMinutes)
+
+  if (startMinutes === endMinutes) {
+    if (startMinutes >= GRID_END_MINUTES) {
+      startMinutes = GRID_END_MINUTES - STEP_MINUTES
+    }
+    endMinutes = startMinutes + STEP_MINUTES
+  }
+
+  startMinutes = clampGridMinutes(startMinutes, GRID_START_MINUTES, GRID_END_MINUTES - STEP_MINUTES)
+  endMinutes = clampGridMinutes(endMinutes, startMinutes + STEP_MINUTES, GRID_END_MINUTES)
+
+  return { startMinutes, endMinutes }
+}
+
+function normalizeEventTimeRange(startTime, endTime) {
+  const startMinutes = clampGridMinutes(
+    minutesFromTime(startTime),
+    GRID_START_MINUTES,
+    GRID_END_MINUTES - STEP_MINUTES
+  )
+  const endMinutes = clampGridMinutes(
+    minutesFromTime(endTime),
+    startMinutes + STEP_MINUTES,
+    GRID_END_MINUTES
+  )
+
+  return {
+    startTime: minutesToTime(startMinutes),
+    endTime: minutesToTime(endMinutes)
+  }
+}
 
 function loadScript(src, id) {
   return new Promise((resolve, reject) => {
@@ -264,34 +328,25 @@ function saveFiredReminders(reminders) {
 }
 
 function EventForm({ initial, onSave, onDelete, onCancel }) {
+  const initialTimes = normalizeEventTimeRange(initial.startTime || '05:00', initial.endTime || '06:00')
   const [title, setTitle] = useState(initial.title ?? '')
   const [date, setDate] = useState(initial.date || formatISO(new Date()))
-  const [startTime, setStartTime] = useState(initial.startTime || '05:00')
-  const [endTime, setEndTime] = useState(initial.endTime || '06:00')
+  const [startTime, setStartTime] = useState(initialTimes.startTime)
+  const [endTime, setEndTime] = useState(initialTimes.endTime)
   const [reminderOffsets, setReminderOffsets] = useState(() => reminderOffsetsForEvent(initial))
-
-  // Generate 5-minute interval time slots from 05:00 to 24:00
-  const timeSlots = []
-  for (let hour = 5; hour < 24; hour++) {
-    for (let min = 0; min < 60; min += 5) {
-      timeSlots.push(`${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}`)
-    }
-  }
-  // Add 24:00 as the final slot
-  timeSlots.push('24:00')
 
   function submit(e) {
     e && e.preventDefault()
     if (!title.trim()) return
     const eventData = { ...initial }
     delete eventData.reminderOffset
+    const normalizedTimes = normalizeEventTimeRange(startTime, endTime)
 
     onSave({
       ...eventData,
       title,
       date,
-      startTime,
-      endTime,
+      ...normalizedTimes,
       reminderOffsets
     })
   }
@@ -329,7 +384,7 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
           <label>
             開始
             <select value={startTime} onChange={e => setStartTime(e.target.value)}>
-              {timeSlots.map(slot => (
+              {TIME_OPTIONS.map(slot => (
                 <option key={slot} value={slot}>{slot}</option>
               ))}
             </select>
@@ -337,7 +392,7 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
           <label>
             終了
             <select value={endTime} onChange={e => setEndTime(e.target.value)}>
-              {timeSlots.map(slot => (
+              {TIME_OPTIONS.map(slot => (
                 <option key={slot} value={slot}>{slot}</option>
               ))}
             </select>
@@ -398,6 +453,8 @@ export default function App() {
   const [dragSelection, setDragSelection] = useState(null)
   const [dragState, setDragState] = useState(null)
   const [draggedTaskId, setDraggedTaskId] = useState(null)
+  const dragSelectionBodyRef = useRef(null)
+  const dragSelectionRef = useRef(null)
   const [now, setNow] = useState(new Date())
   const [taskDrafts, setTaskDrafts] = useState({})
   const [firedReminders, setFiredReminders] = useState(() => defaultFiredReminders())
@@ -434,24 +491,52 @@ export default function App() {
   const currentTimeVisible = currentMinutes >= GRID_START_MINUTES && currentMinutes <= GRID_END_MINUTES
 
   useEffect(() => {
+    dragSelectionRef.current = dragSelection
+  }, [dragSelection])
+
+  useEffect(() => {
     if (!dragSelection) return
-    function handleMouseUp() {
-      if (!dragSelection) return
-      const startHour = Math.min(dragSelection.anchorHour, dragSelection.currentHour)
-      const endHour = Math.min(24, Math.max(dragSelection.anchorHour, dragSelection.currentHour) + 1)
-      const startTimeStr = startHour === 24 ? '24:00' : `${String(startHour).padStart(2, '0')}:00`
-      const endTimeStr = endHour === 24 ? '24:00' : `${String(endHour).padStart(2, '0')}:00`
+    function handlePointerMove(e) {
+      const dayBody = dragSelectionBodyRef.current
+      if (!dayBody) return
+      e.preventDefault()
+      const nextMinutes = minutesFromPointer(e, dayBody)
+      setDragSelection(prev => {
+        if (!prev) return prev
+        const next = { ...prev, currentMinutes: nextMinutes }
+        dragSelectionRef.current = next
+        return next
+      })
+    }
+
+    function handlePointerUp(e) {
+      const dayBody = dragSelectionBodyRef.current
+      const activeSelection = dragSelectionRef.current || dragSelection
+      if (!activeSelection) return
+      const finalSelection = dayBody
+        ? { ...activeSelection, currentMinutes: minutesFromPointer(e, dayBody) }
+        : activeSelection
+      const { startMinutes, endMinutes } = eventRangeFromSelection(
+        finalSelection.anchorMinutes,
+        finalSelection.currentMinutes
+      )
       setEditing({
         id: null,
-        date: dragSelection.date,
-        startTime: startTimeStr,
-        endTime: endTimeStr,
+        date: finalSelection.date,
+        startTime: minutesToTime(startMinutes),
+        endTime: minutesToTime(endMinutes),
         title: ''
       })
       setDragSelection(null)
+      dragSelectionBodyRef.current = null
     }
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => window.removeEventListener('mouseup', handleMouseUp)
+
+    window.addEventListener('pointermove', handlePointerMove)
+    window.addEventListener('pointerup', handlePointerUp)
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+    }
   }, [dragSelection])
 
   useEffect(() => {
@@ -504,9 +589,9 @@ export default function App() {
         if (ev.id !== dragState.eventId) return ev
 
         const deltaY = e.clientY - dragState.originY
-        const stepPixels = ROW_HEIGHT / 12
+        const stepPixels = ROW_HEIGHT / STEPS_PER_HOUR
         const deltaSteps = Math.round(deltaY / stepPixels)
-        const deltaMinutes = deltaSteps * 5
+        const deltaMinutes = deltaSteps * STEP_MINUTES
         let newStart = dragState.initialStart
         let newEnd = dragState.initialEnd
 
@@ -515,9 +600,9 @@ export default function App() {
           newStart = clamp(dragState.initialStart + deltaMinutes, GRID_START_MINUTES, GRID_END_MINUTES - duration)
           newEnd = newStart + duration
         } else if (dragState.type === 'resize-start') {
-          newStart = clamp(dragState.initialStart + deltaMinutes, GRID_START_MINUTES, dragState.initialEnd - 5)
+          newStart = clamp(dragState.initialStart + deltaMinutes, GRID_START_MINUTES, dragState.initialEnd - STEP_MINUTES)
         } else if (dragState.type === 'resize-end') {
-          newEnd = clamp(dragState.initialEnd + deltaMinutes, dragState.initialStart + 5, GRID_END_MINUTES)
+          newEnd = clamp(dragState.initialEnd + deltaMinutes, dragState.initialStart + STEP_MINUTES, GRID_END_MINUTES)
         }
 
         return {
@@ -549,11 +634,16 @@ export default function App() {
   }
 
   function saveEvent(ev) {
+    const normalizedEvent = {
+      ...ev,
+      ...normalizeEventTimeRange(ev.startTime, ev.endTime)
+    }
+
     if (ev.id) {
-      setEvents(prev => prev.map(item => (item.id === ev.id ? ev : item)))
+      setEvents(prev => prev.map(item => (item.id === ev.id ? normalizedEvent : item)))
     } else {
       const id = createLocalId('event')
-      setEvents(prev => [...prev, { ...ev, id }])
+      setEvents(prev => [...prev, { ...normalizedEvent, id }])
     }
     setEditing(null)
   }
@@ -686,6 +776,22 @@ export default function App() {
       initialStart: minutesFromTime(ev.startTime),
       initialEnd: minutesFromTime(ev.endTime)
     })
+  }
+
+  function startCreateDrag(e, dateISO) {
+    if (e.button !== 0) return
+    if (e.target.closest('.event-block')) return
+
+    e.preventDefault()
+    dragSelectionBodyRef.current = e.currentTarget
+    const selectedMinutes = minutesFromPointer(e, e.currentTarget)
+    const nextSelection = {
+      date: dateISO,
+      anchorMinutes: selectedMinutes,
+      currentMinutes: selectedMinutes
+    }
+    dragSelectionRef.current = nextSelection
+    setDragSelection(nextSelection)
   }
 
   function eventsFor(dateISO) {
@@ -870,30 +976,21 @@ export default function App() {
                     const dayTasks = tasksFor(iso)
                     const tone = dayHeaderTone(day)
                     const isDragActive = dragSelection?.date === iso
-                    const dragStart = isDragActive ? Math.min(dragSelection.anchorHour, dragSelection.currentHour) : 0
-                    const dragEnd = isDragActive ? Math.max(dragSelection.anchorHour, dragSelection.currentHour) + 1 : 0
+                    const dragRange = isDragActive
+                      ? eventRangeFromSelection(dragSelection.anchorMinutes, dragSelection.currentMinutes)
+                      : null
                     return (
                       <div className={`day-column ${tone}`} key={iso}>
                         <div className={`day-header ${tone}`}>
                           <span>{day.toLocaleDateString('ja-JP', { weekday: 'short' })}</span>
                           <strong>{day.getDate()}</strong>
                         </div>
-                        <div className="day-body">
+                        <div className="day-body" onPointerDown={e => startCreateDrag(e, iso)}>
                           {HOURS.map(hour => (
                             <div
                               key={hour}
                               className="slot"
                               style={{ height: ROW_HEIGHT + 'px' }}
-                              onMouseDown={e => {
-                                e.preventDefault()
-                                setDragSelection({ date: iso, anchorHour: hour, currentHour: hour })
-                              }}
-                              onMouseEnter={() => {
-                                setDragSelection(prev => {
-                                  if (!prev || prev.date !== iso) return prev
-                                  return { ...prev, currentHour: hour }
-                                })
-                              }}
                             >
                               <span className="slot-hour-label" aria-hidden="true">{hour}</span>
                             </div>
@@ -905,20 +1002,26 @@ export default function App() {
                             <div
                               className="drag-selection"
                               style={{
-                                top: (dragStart - HOURS[0]) * ROW_HEIGHT + 'px',
-                                height: (dragEnd - dragStart) * ROW_HEIGHT + 'px'
+                                top: gridTopFromMinutes(dragRange.startMinutes) + 'px',
+                                height: gridHeightFromMinutes(dragRange.startMinutes, dragRange.endMinutes) + 'px'
                               }}
                             />
                           )}
 
                           {dayEvents.map(ev => {
-                            const top = (minutesFromTime(ev.startTime) - HOURS[0] * 60) / 60 * ROW_HEIGHT
-                            const height = (minutesFromTime(ev.endTime) - minutesFromTime(ev.startTime)) / 60 * ROW_HEIGHT
+                            const startMinutes = minutesFromTime(ev.startTime)
+                            const endMinutes = minutesFromTime(ev.endTime)
+                            const top = gridTopFromMinutes(startMinutes)
+                            const height = gridHeightFromMinutes(startMinutes, endMinutes)
+                            const visualGap = height >= 8 ? 2 : 0
                             return (
                               <div
                                 key={ev.id}
                                 className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''}`}
-                                style={{ top: top + 'px', height: Math.max(20, height) + 'px' }}
+                                style={{
+                                  top: top + visualGap / 2 + 'px',
+                                  height: Math.max(1, height - visualGap) + 'px'
+                                }}
                                 onClick={e => { e.stopPropagation(); openEdit(ev) }}
                               >
                                 <div className="event-handle top" onPointerDown={e => startEventDrag(e, ev, 'resize-start')} />
