@@ -118,17 +118,22 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max)
 }
 
-const HOURS = Array.from({ length: 20 }, (_, i) => 5 + i) // 5..24
-const TIME_LABELS = HOURS.map(hour => {
-  if (hour === 24) return '24:00'
-  return `${String(hour).padStart(2, '0')}:00`
-})
+const PLANNER_START_HOUR = 5
+const PLANNER_END_HOUR = 24
+const PLANNER_SLOT_HOURS = Array.from(
+  { length: PLANNER_END_HOUR - PLANNER_START_HOUR },
+  (_, i) => PLANNER_START_HOUR + i
+)
+const PLANNER_TIME_MARKS = Array.from(
+  { length: PLANNER_END_HOUR - PLANNER_START_HOUR + 1 },
+  (_, i) => PLANNER_START_HOUR + i
+)
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
 const ROW_HEIGHT = 23 // px per hour
 const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
-const GRID_START_MINUTES = 5 * 60
-const GRID_END_MINUTES = 24 * 60
+const GRID_START_MINUTES = PLANNER_START_HOUR * 60
+const GRID_END_MINUTES = PLANNER_END_HOUR * 60
 const MOBILE_HOUR_HEIGHT = 80
 const MOBILE_TIMELINE_HOURS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / 60 },
@@ -1480,6 +1485,8 @@ export default function App() {
   const mobileDragModeRef = useRef('idle')
   const mobileDragListenersCleanupRef = useRef(null)
   const mobileDragScrollLockRef = useRef(null)
+  const mobileScheduleSectionRef = useRef(null)
+  const mobileScheduleAutoScrollKeyRef = useRef('')
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -2063,6 +2070,34 @@ export default function App() {
       .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedMonthDate])
+
+  useEffect(() => {
+    if (mobileActivePage !== 'events') return
+    const scheduleSection = mobileScheduleSectionRef.current
+    if (!scheduleSection) return
+
+    const scrollKey = currentDateISO
+    if (mobileScheduleAutoScrollKeyRef.current === scrollKey) return
+    mobileScheduleAutoScrollKeyRef.current = scrollKey
+
+    let firstFrame = 0
+    let secondFrame = 0
+    firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const targetMinutes = clamp(currentMinutes, GRID_START_MINUTES, GRID_END_MINUTES)
+        const targetY = mobileTimelineYForMinutes(targetMinutes)
+        const visibleOffset = scheduleSection.clientHeight * 0.38
+        const maxScrollTop = Math.max(0, scheduleSection.scrollHeight - scheduleSection.clientHeight)
+        const nextScrollTop = clamp(targetY - visibleOffset, 0, maxScrollTop)
+        scheduleSection.scrollTo({ top: nextScrollTop, behavior: 'auto' })
+      })
+    })
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame)
+      window.cancelAnimationFrame(secondFrame)
+    }
+  }, [currentDateISO, currentMinutes, mobileActivePage])
 
   function createUndoSnapshot() {
     return {
@@ -3650,7 +3685,7 @@ export default function App() {
         </section>
 
         {mobileActivePage === 'events' && (
-          <section className="mobile-section mobile-schedule-page">
+          <section className="mobile-section mobile-schedule-page" ref={mobileScheduleSectionRef}>
             <div
               className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
               style={{
@@ -3930,11 +3965,30 @@ export default function App() {
               <div className="timetable-grid">
                 <div className="time-col">
                   <div className="time-header">時間</div>
-                  {TIME_LABELS.map(label => (
-                    <div key={label} className="time-row" style={{ height: ROW_HEIGHT + 'px' }}>
-                      {label}
-                    </div>
-                  ))}
+                  <div className="time-list" style={{ height: `${PLANNER_SLOT_HOURS.length * ROW_HEIGHT}px` }}>
+                    {PLANNER_TIME_MARKS.map(hour => {
+                      const isStartMark = hour === PLANNER_START_HOUR
+                      const isEndMark = hour === PLANNER_END_HOUR
+                      const className = [
+                        'time-mark',
+                        isStartMark ? 'start' : '',
+                        isEndMark ? 'end' : ''
+                      ].filter(Boolean).join(' ')
+
+                      return (
+                        <div
+                          key={hour}
+                          className={className}
+                          style={{ top: `${(hour - PLANNER_START_HOUR) * ROW_HEIGHT}px` }}
+                        >
+                          <span className="time-mark-label">
+                            {`${String(hour).padStart(2, '0')}:00`}
+                          </span>
+                          {!isStartMark && !isEndMark && <span className="time-mark-line" />}
+                        </div>
+                      )
+                    })}
+                  </div>
                 </div>
 
                 <div className="days-col">
@@ -3955,7 +4009,7 @@ export default function App() {
                           <strong className="day-number">{day.getDate()}</strong>
                         </div>
                         <div className="day-body" onPointerDown={e => startCreateDrag(e, iso)}>
-                          {HOURS.map(hour => (
+                          {PLANNER_SLOT_HOURS.map(hour => (
                             <div
                               key={hour}
                               className="slot"

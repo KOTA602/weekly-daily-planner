@@ -457,6 +457,7 @@
 }
 .timetable {
   --hour-height: 23px;
+  --planner-hour-count: 19;
   --task-panel-height: clamp(220px, 30vh, 245px);
   --day-column-min-width: 140px;
   --day-grid-min-width: calc(var(--day-column-min-width) * 7 + 7px * 6);
@@ -482,7 +483,6 @@
 .time-col {
   width: 68px;
   min-width: 68px;
-  max-height: calc(100% - var(--task-panel-height));
   flex-shrink: 0;
   background: #faf7f3;
   border: 1px solid rgba(0, 0, 0, 0.09);
@@ -504,25 +504,51 @@
   padding: 0;
   line-height: 1;
 }
-.timetable .time-row {
+.time-list {
+  position: relative;
+  flex: 0 0 auto;
+}
+.time-mark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+}
+.time-mark-label {
+  position: absolute;
+  left: 0;
+  top: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 var(--hour-height);
-  padding: 0;
+  width: 100%;
+  min-height: 14px;
+  transform: translateY(-50%);
   font-size: 11px;
   color: #334155;
   font-weight: 600;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  box-sizing: border-box;
   white-space: nowrap;
   line-height: 1;
-  height: var(--hour-height);
+}
+.time-mark.start .time-mark-label {
+  transform: translateY(0);
+}
+.time-mark.end .time-mark-label {
+  transform: translateY(-100%);
+}
+.time-mark-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: rgba(0, 0, 0, 0.08);
 }
 .days-col {
   display: grid;
   grid-template-columns: repeat(7, minmax(var(--day-column-min-width), 1fr));
   gap: 7px;
+  align-items: start;
   flex: 1;
   min-height: 0;
   min-width: var(--day-grid-min-width);
@@ -585,8 +611,9 @@
 }
 .day-body {
   position: relative;
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 0 0 calc(var(--hour-height) * var(--planner-hour-count));
+  height: calc(var(--hour-height) * var(--planner-hour-count));
+  min-height: calc(var(--hour-height) * var(--planner-hour-count));
   overflow: auto;
   background: #fff;
   cursor: crosshair;
@@ -666,6 +693,7 @@
   position: absolute;
   --event-label-gutter: 24px;
   --event-line-color: #1e3a8a;
+  --event-grid-line-color: rgba(15, 23, 42, 0.085);
   --event-top-line: inset 0 1px 0 var(--event-line-color);
   --event-bottom-line: inset 0 -1px 0 var(--event-line-color);
   --event-fill: rgba(239, 246, 255, 0.92);
@@ -700,6 +728,15 @@
 }
 .event-block::after {
   z-index: 1;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--hour-height) - 1px),
+    var(--event-grid-line-color) calc(var(--hour-height) - 1px),
+    var(--event-grid-line-color) var(--hour-height)
+  );
+  background-position: 0 var(--event-grid-offset);
+  background-size: 100% var(--hour-height);
   box-shadow: var(--event-top-line), var(--event-bottom-line);
 }
 .event-block:hover {
@@ -709,6 +746,7 @@
 }
 .event-block.current-event {
   --event-line-color: #fb923c;
+  --event-grid-line-color: rgba(154, 52, 18, 0.13);
   --event-fill: rgba(255, 247, 237, 0.92);
   background: transparent;
   color: #9a3412;
@@ -2066,7 +2104,7 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 14px;
+  padding: 14px 18px;
 }
 .mobile-section-heading {
   display: flex;
@@ -2497,8 +2535,9 @@
   text-align: center;
 }
 .mobile-memo-page textarea {
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 260px;
+  min-height: 0;
   border: 1px solid rgba(15, 23, 42, 0.12);
   border-radius: 10px;
   background: #fff;
@@ -2508,7 +2547,7 @@
   font-size: 14px;
   line-height: 1.5;
   padding: 12px;
-  resize: vertical;
+  resize: none;
 }
 .mobile-month-weekdays,
 .mobile-month-grid {
@@ -2966,6 +3005,9 @@
   }
   .mobile-schedule-page {
     padding-top: 0;
+  }
+  .mobile-memo-page {
+    padding-bottom: calc(18px + env(safe-area-inset-bottom));
   }
   .mobile-timeline {
     overflow: visible;
