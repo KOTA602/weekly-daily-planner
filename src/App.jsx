@@ -134,6 +134,10 @@ const MOBILE_TIMELINE_HOURS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / 60 },
   (_, i) => GRID_START_MINUTES / 60 + i
 )
+const MOBILE_TIMELINE_MARKS = Array.from(
+  { length: (GRID_END_MINUTES - GRID_START_MINUTES) / 60 + 1 },
+  (_, i) => GRID_START_MINUTES / 60 + i
+)
 const MOBILE_TIMELINE_HEIGHT = MOBILE_TIMELINE_HOURS.length * MOBILE_HOUR_HEIGHT
 const TIME_OPTIONS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / STEP_MINUTES + 1 },
@@ -3662,15 +3666,29 @@ export default function App() {
               }}
             >
               <div className="mobile-timeline-grid" aria-hidden="true">
-                {MOBILE_TIMELINE_HOURS.map(hour => (
-                  <div key={hour} className="mobile-hour-row" data-hour={hour}>
-                    <div className="mobile-hour-label">
-                      {`${String(hour).padStart(2, '0')}:00`}
+                {MOBILE_TIMELINE_MARKS.map(hour => {
+                  const isStartMark = hour === GRID_START_MINUTES / 60
+                  const isEndMark = hour === GRID_END_MINUTES / 60
+                  const markClassName = [
+                    'mobile-hour-row',
+                    isStartMark ? 'start' : '',
+                    isEndMark ? 'end' : ''
+                  ].filter(Boolean).join(' ')
+
+                  return (
+                    <div
+                      key={hour}
+                      className={markClassName}
+                      data-hour={hour}
+                      style={{ top: `${mobileTimelineYForMinutes(hour * 60)}px` }}
+                    >
+                      <div className="mobile-hour-label">
+                        {`${String(hour).padStart(2, '0')}:00`}
+                      </div>
+                      {!isStartMark && !isEndMark && <div className="mobile-hour-line" />}
                     </div>
-                    <div className="mobile-hour-line" />
-                  </div>
-                ))}
-                <div className="mobile-hour-end-label">24:00</div>
+                  )
+                })}
               </div>
 
               {selectedMobileDate === currentDateISO && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
