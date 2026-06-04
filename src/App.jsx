@@ -129,8 +129,8 @@ const EVENT_REMINDER_CHOICES = [
 ]
 const REMINDER_GRACE_MS = 90 * 1000
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
-const MOBILE_LONG_PRESS_MS = 420
-const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 18
+const MOBILE_LONG_PRESS_MS = 400
+const MOBILE_LONG_PRESS_MOVE_CANCEL_PX = 10
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -1453,6 +1453,9 @@ export default function App() {
   const mobileLongPressTimerRef = useRef(null)
   const mobileDragStartRef = useRef(null)
   const mobileDragSelectionRef = useRef(null)
+  const mobileDragModeRef = useRef('idle')
+  const mobileDragListenersCleanupRef = useRef(null)
+  const mobileDragScrollLockRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1526,6 +1529,7 @@ export default function App() {
   })
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
+  const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
   const [draftEventTitle, setDraftEventTitle] = useState('')
@@ -1884,10 +1888,59 @@ export default function App() {
       document.documentElement.style.overflow = previousDocumentOverflow
     }
   }, [isEventModalOpen])
+
+  useEffect(() => {
+    if (!isMobileDragScrollLocked) return undefined
+
+    const scrollX = window.scrollX
+    const scrollY = window.scrollY
+    const lock = {
+      scrollX,
+      scrollY,
+      bodyPosition: document.body.style.position,
+      bodyTop: document.body.style.top,
+      bodyLeft: document.body.style.left,
+      bodyRight: document.body.style.right,
+      bodyWidth: document.body.style.width,
+      bodyOverflow: document.body.style.overflow,
+      bodyTouchAction: document.body.style.touchAction,
+      documentOverflow: document.documentElement.style.overflow,
+      documentTouchAction: document.documentElement.style.touchAction
+    }
+
+    mobileDragScrollLockRef.current = lock
+    document.body.style.position = 'fixed'
+    document.body.style.top = `-${scrollY}px`
+    document.body.style.left = '0'
+    document.body.style.right = '0'
+    document.body.style.width = '100%'
+    document.body.style.overflow = 'hidden'
+    document.body.style.touchAction = 'none'
+    document.documentElement.style.overflow = 'hidden'
+    document.documentElement.style.touchAction = 'none'
+
+    return () => {
+      document.body.style.position = lock.bodyPosition
+      document.body.style.top = lock.bodyTop
+      document.body.style.left = lock.bodyLeft
+      document.body.style.right = lock.bodyRight
+      document.body.style.width = lock.bodyWidth
+      document.body.style.overflow = lock.bodyOverflow
+      document.body.style.touchAction = lock.bodyTouchAction
+      document.documentElement.style.overflow = lock.documentOverflow
+      document.documentElement.style.touchAction = lock.documentTouchAction
+      window.scrollTo(lock.scrollX, lock.scrollY)
+      if (mobileDragScrollLockRef.current === lock) {
+        mobileDragScrollLockRef.current = null
+      }
+    }
+  }, [isMobileDragScrollLocked])
+
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
       window.clearTimeout(mobileLongPressTimerRef.current)
     }
+    mobileDragListenersCleanupRef.current?.()
   }, [])
 
   const weekDates = useMemo(() => {
@@ -3243,6 +3296,42 @@ export default function App() {
     mobileLongPressTimerRef.current = null
   }
 
+  function clearMobileDragDocumentListeners() {
+    mobileDragListenersCleanupRef.current?.()
+    mobileDragListenersCleanupRef.current = null
+  }
+
+  function preventMobileGestureDefault(e) {
+    if (e?.cancelable === false) return
+    e?.preventDefault?.()
+  }
+
+  function pointFromMobileGestureEvent(e) {
+    if (!e) return null
+    if (Number.isFinite(e.clientY)) {
+      return { clientX: e.clientX, clientY: e.clientY }
+    }
+
+    const touch = e.touches?.[0] || e.changedTouches?.[0]
+    if (!touch) return null
+
+    return { clientX: touch.clientX, clientY: touch.clientY }
+  }
+
+  function isMatchingMobileDragPointer(e, startState = mobileDragStartRef.current) {
+    if (!startState) return false
+    if (e?.pointerId == null) return true
+    return e.pointerId === startState.pointerId
+  }
+
+  function lockMobileDragScroll() {
+    setIsMobileDragScrollLocked(true)
+  }
+
+  function unlockMobileDragScroll() {
+    setIsMobileDragScrollLocked(false)
+  }
+
   function releaseMobilePointerCapture(startState) {
     if (!startState?.timeline?.hasPointerCapture?.(startState.pointerId)) return
 
@@ -3253,10 +3342,60 @@ export default function App() {
     }
   }
 
+  function bindMobileDragDocumentListeners() {
+    clearMobileDragDocumentListeners()
+
+    const handlePointerMove = event => {
+      updateMobileDragCreate(event)
+    }
+    const handlePointerUp = event => {
+      finishMobileLongPressCreate(event)
+    }
+    const handlePointerCancel = event => {
+      cancelMobileLongPressCreate(event)
+    }
+    const handleTouchMove = event => {
+      if (mobileDragModeRef.current !== 'creating') return
+      preventMobileGestureDefault(event)
+      updateMobileDragCreate(event)
+    }
+    const handleTouchEnd = event => {
+      if (mobileDragModeRef.current === 'creating') {
+        finishMobileLongPressCreate(event)
+        return
+      }
+      if (mobileDragModeRef.current === 'pressing') {
+        resetMobileDragCreate()
+      }
+    }
+    const handleTouchCancel = event => {
+      cancelMobileLongPressCreate(event)
+    }
+
+    document.addEventListener('pointermove', handlePointerMove, true)
+    document.addEventListener('pointerup', handlePointerUp, true)
+    document.addEventListener('pointercancel', handlePointerCancel, true)
+    document.addEventListener('touchmove', handleTouchMove, { capture: true, passive: false })
+    document.addEventListener('touchend', handleTouchEnd, true)
+    document.addEventListener('touchcancel', handleTouchCancel, true)
+
+    mobileDragListenersCleanupRef.current = () => {
+      document.removeEventListener('pointermove', handlePointerMove, true)
+      document.removeEventListener('pointerup', handlePointerUp, true)
+      document.removeEventListener('pointercancel', handlePointerCancel, true)
+      document.removeEventListener('touchmove', handleTouchMove, true)
+      document.removeEventListener('touchend', handleTouchEnd, true)
+      document.removeEventListener('touchcancel', handleTouchCancel, true)
+    }
+  }
+
   function resetMobileDragCreate(options = {}) {
     const { keepPreview = false } = options
     releaseMobilePointerCapture(mobileDragStartRef.current)
     clearMobileLongPressTimer()
+    clearMobileDragDocumentListeners()
+    unlockMobileDragScroll()
+    mobileDragModeRef.current = 'idle'
     mobileDragStartRef.current = null
     if (!keepPreview) {
       mobileDragSelectionRef.current = null
@@ -3282,13 +3421,22 @@ export default function App() {
       anchorY: position.y
     }
 
+    resetMobileDragCreate()
+    mobileDragModeRef.current = 'pressing'
     mobileDragStartRef.current = startState
     mobileDragSelectionRef.current = null
     setMobileDragSelection(null)
-    clearMobileLongPressTimer()
+    bindMobileDragDocumentListeners()
 
     mobileLongPressTimerRef.current = window.setTimeout(() => {
+      if (mobileDragModeRef.current !== 'pressing' || mobileDragStartRef.current?.pointerId !== startState.pointerId) {
+        mobileLongPressTimerRef.current = null
+        return
+      }
+
       window.getSelection?.().removeAllRanges?.()
+      mobileDragModeRef.current = 'creating'
+      lockMobileDragScroll()
       const nextSelection = {
         anchorMinutes: startState.anchorMinutes,
         currentMinutes: startState.anchorMinutes,
@@ -3307,22 +3455,31 @@ export default function App() {
     }, MOBILE_LONG_PRESS_MS)
   }
 
-  function moveMobileLongPressCreate(e) {
+  function updateMobileDragCreate(e) {
     if (e.isPrimary === false) return
     const startState = mobileDragStartRef.current
     if (!startState) return
-    if (e.pointerId !== startState.pointerId) return
+    if (!isMatchingMobileDragPointer(e, startState)) return
 
-    const distance = Math.hypot(e.clientX - startState.originX, e.clientY - startState.originY)
-    if (!mobileDragSelectionRef.current && distance > MOBILE_LONG_PRESS_MOVE_TOLERANCE) {
+    const point = pointFromMobileGestureEvent(e)
+    if (!point) return
+
+    const distance = Math.hypot(point.clientX - startState.originX, point.clientY - startState.originY)
+    if (mobileDragModeRef.current === 'pressing') {
+      if (distance > MOBILE_LONG_PRESS_MOVE_CANCEL_PX) {
+        resetMobileDragCreate()
+      }
+      return
+    }
+
+    if (mobileDragModeRef.current !== 'creating') return
+    if (!mobileDragSelectionRef.current) {
       resetMobileDragCreate()
       return
     }
 
-    if (!mobileDragSelectionRef.current) return
-
-    e.preventDefault()
-    const position = mobilePointerPosition(e, startState.timeline)
+    preventMobileGestureDefault(e)
+    const position = mobilePointerPosition(point, startState.timeline)
     const nextSelection = {
       ...mobileDragSelectionRef.current,
       currentMinutes: position.minutes,
@@ -3337,16 +3494,22 @@ export default function App() {
     if (e.isPrimary === false) return
     const selection = mobileDragSelectionRef.current
     const startState = mobileDragStartRef.current
-    if (startState && e.pointerId !== startState.pointerId) return
+    if (startState && !isMatchingMobileDragPointer(e, startState)) return
 
-    if (!selection) {
+    if (mobileDragModeRef.current === 'pressing') {
       resetMobileDragCreate()
       return
     }
 
-    e.preventDefault()
-    const finalPosition = startState?.timeline
-      ? mobilePointerPosition(e, startState.timeline)
+    if (mobileDragModeRef.current !== 'creating' || !selection) {
+      resetMobileDragCreate()
+      return
+    }
+
+    preventMobileGestureDefault(e)
+    const point = pointFromMobileGestureEvent(e)
+    const finalPosition = startState?.timeline && point
+      ? mobilePointerPosition(point, startState.timeline)
       : null
     const finalSelection = finalPosition
       ? {
@@ -3356,15 +3519,17 @@ export default function App() {
         }
       : selection
     const range = eventRangeFromSelection(finalSelection.anchorMinutes, finalSelection.currentMinutes)
+    resetMobileDragCreate({ keepPreview: true })
     openMobileNewEventModal({
       date: selectedMobileDate,
       startTime: minutesToTime(range.startMinutes),
       endTime: minutesToTime(range.endMinutes)
     })
-    resetMobileDragCreate({ keepPreview: true })
   }
 
-  function cancelMobileLongPressCreate() {
+  function cancelMobileLongPressCreate(e) {
+    if (e?.isPrimary === false) return
+    if (mobileDragStartRef.current && !isMatchingMobileDragPointer(e)) return
     resetMobileDragCreate()
   }
 
@@ -3592,8 +3757,6 @@ export default function App() {
                 '--mobile-hour-height': `${MOBILE_HOUR_HEIGHT}px`
               }}
               onPointerDown={startMobileLongPressCreate}
-              onPointerMove={moveMobileLongPressCreate}
-              onPointerUp={finishMobileLongPressCreate}
               onPointerCancel={cancelMobileLongPressCreate}
               onSelect={e => e.preventDefault()}
               onDragStart={e => e.preventDefault()}
@@ -3636,7 +3799,7 @@ export default function App() {
                   <button
                     key={event.id}
                     type="button"
-                    className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
+                    className={`mobile-event-card mobile-event-block ${isEventInProgress(event) ? 'current-event' : ''}`}
                     style={mobileEventBlockStyle(event)}
                     onClick={() => openMobileEventModal(event)}
                     aria-label={`${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`}
@@ -4367,7 +4530,6 @@ export default function App() {
                 value={draftEventTitle}
                 onChange={e => setDraftEventTitle(e.target.value)}
                 placeholder="予定タイトル"
-                autoFocus
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}

@@ -2199,7 +2199,7 @@
   justify-content: center;
   border-top: 1px solid #1e3a8a;
   border-bottom: 1px solid #1e3a8a;
-  background: rgba(219, 234, 254, 0.42);
+  background: rgba(219, 234, 254, 0.28);
   color: #1e3a8a;
   font-size: 12px;
   font-weight: 800;
@@ -2381,9 +2381,12 @@
   right: 8px;
   display: flex;
   align-items: center;
-  border: 1px solid rgba(37, 99, 235, 0.22);
-  border-radius: 8px;
-  background: rgba(219, 234, 254, 0.72);
+  border: none;
+  border-top: 1px solid #1e3a8a;
+  border-bottom: 1px solid #1e3a8a;
+  border-radius: 0;
+  background: rgba(219, 234, 254, 0.28);
+  box-shadow: none;
   box-sizing: border-box;
   color: #1e3a8a;
   cursor: pointer;
@@ -2394,9 +2397,14 @@
   pointer-events: auto;
 }
 .mobile-event-card.current-event {
-  border-color: rgba(251, 146, 60, 0.65);
-  background: rgba(255, 237, 213, 0.88);
+  border-top-color: #ea580c;
+  border-bottom-color: #ea580c;
+  background: rgba(255, 237, 213, 0.36);
   color: #9a3412;
+}
+.mobile-event-block {
+  border-left: none;
+  border-right: none;
 }
 .mobile-event-title {
   min-width: 0;
