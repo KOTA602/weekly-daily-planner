@@ -109,6 +109,12 @@ const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
 const GRID_START_MINUTES = 5 * 60
 const GRID_END_MINUTES = 24 * 60
+const MOBILE_HOUR_HEIGHT = 80
+const MOBILE_TIMELINE_HOURS = Array.from(
+  { length: (GRID_END_MINUTES - GRID_START_MINUTES) / 60 },
+  (_, i) => GRID_START_MINUTES / 60 + i
+)
+const MOBILE_TIMELINE_HEIGHT = MOBILE_TIMELINE_HOURS.length * MOBILE_HOUR_HEIGHT
 const TIME_OPTIONS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / STEP_MINUTES + 1 },
   (_, i) => minutesToTime(GRID_START_MINUTES + i * STEP_MINUTES)
@@ -149,55 +155,26 @@ function minutesFromPointer(e, element) {
   return clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
 }
 
-function mobileTimelineYForMinutes(minutes, timeline) {
-  const timelineRect = timeline.getBoundingClientRect()
-  const rows = Array.from(timeline.querySelectorAll('.mobile-hour-row'))
-  if (rows.length === 0) return 0
-
+function mobileTimelineYForMinutes(minutes) {
   const clampedMinutes = clamp(minutes, GRID_START_MINUTES, GRID_END_MINUTES)
-  if (clampedMinutes >= GRID_END_MINUTES) {
-    const endRow = rows.find(row => Number(row.dataset.hour) === 24)
-    if (!endRow) return timelineRect.height
+  return ((clampedMinutes - GRID_START_MINUTES) / 60) * MOBILE_HOUR_HEIGHT
+}
 
-    const endRect = endRow.getBoundingClientRect()
-    return clamp(endRect.top - timelineRect.top, 0, timelineRect.height)
-  }
-
-  const hour = Math.floor(clampedMinutes / 60)
-  const row = rows.find(item => Number(item.dataset.hour) === hour)
-  if (!row) return 0
-
-  const rowRect = row.getBoundingClientRect()
-  const ratio = (clampedMinutes - hour * 60) / 60
-  return clamp(rowRect.top - timelineRect.top + rowRect.height * ratio, 0, timelineRect.height)
+function mobileTimelineHeightFromMinutes(startMinutes, endMinutes) {
+  const normalizedStart = clamp(startMinutes, GRID_START_MINUTES, GRID_END_MINUTES)
+  const normalizedEnd = clamp(endMinutes, normalizedStart, GRID_END_MINUTES)
+  return ((normalizedEnd - normalizedStart) / 60) * MOBILE_HOUR_HEIGHT
 }
 
 function mobilePointerPosition(e, timeline) {
   const timelineRect = timeline.getBoundingClientRect()
-  const rows = Array.from(timeline.querySelectorAll('.mobile-hour-row'))
-  const fallbackRow = e.clientY < timelineRect.top ? rows[0] : rows[rows.length - 1]
-  const activeRow = rows.find(row => {
-    const rect = row.getBoundingClientRect()
-    return e.clientY >= rect.top && e.clientY <= rect.bottom
-  }) || fallbackRow
-
-  if (!activeRow) {
-    return {
-      minutes: GRID_START_MINUTES,
-      y: 0
-    }
-  }
-
-  const rowRect = activeRow.getBoundingClientRect()
-  const hour = Number(activeRow.dataset.hour || GRID_START_MINUTES / 60)
-  const ratio = clamp((e.clientY - rowRect.top) / Math.max(rowRect.height, 1), 0, 1)
-  const minutes = hour >= 24
-    ? GRID_END_MINUTES
-    : clampGridMinutes(hour * 60 + ratio * 60)
+  const y = clamp(e.clientY - timelineRect.top, 0, MOBILE_TIMELINE_HEIGHT)
+  const minutesFromStart = (y / MOBILE_HOUR_HEIGHT) * 60
+  const minutes = clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
 
   return {
     minutes,
-    y: mobileTimelineYForMinutes(minutes, timeline)
+    y: mobileTimelineYForMinutes(minutes)
   }
 }
 
@@ -240,6 +217,17 @@ function normalizePlannerEvent(event) {
   return {
     ...event,
     ...normalizeEventTimeRange(event.startTime || '05:00', event.endTime || '06:00')
+  }
+}
+
+function mobileEventBlockStyle(event) {
+  const normalizedEvent = normalizePlannerEvent(event)
+  const startMinutes = minutesFromTime(normalizedEvent.startTime)
+  const endMinutes = minutesFromTime(normalizedEvent.endTime)
+
+  return {
+    top: `${mobileTimelineYForMinutes(startMinutes)}px`,
+    height: `${mobileTimelineHeightFromMinutes(startMinutes, endMinutes)}px`
   }
 }
 
@@ -1947,6 +1935,7 @@ export default function App() {
     weekday: 'long'
   })
   const selectedMobileEvents = dedupeEventsForDisplay(events.filter(item => item.date === selectedMobileDate))
+    .map(normalizePlannerEvent)
     .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
   const mobileMemoKey = dashboardMemoStorageKey(selectedMobileDate)
@@ -1959,8 +1948,11 @@ export default function App() {
     : null
   const mobileDragPreviewStyle = mobileDragSelection
     ? {
-        top: Math.min(mobileDragSelection.anchorY, mobileDragSelection.currentY) + 'px',
-        height: Math.max(2, Math.abs(mobileDragSelection.currentY - mobileDragSelection.anchorY)) + 'px'
+        top: `${mobileTimelineYForMinutes(mobileDragRange.startMinutes)}px`,
+        height: `${Math.max(
+          2,
+          mobileTimelineHeightFromMinutes(mobileDragRange.startMinutes, mobileDragRange.endMinutes)
+        )}px`
       }
     : null
   const draggedTask = useMemo(() => (
@@ -2032,6 +2024,7 @@ export default function App() {
   })
   const selectedMonthEvents = useMemo(() => (
     dedupeEventsForDisplay(events.filter(item => item.date === selectedMonthDate))
+      .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedMonthDate])
 
@@ -3352,7 +3345,17 @@ export default function App() {
     }
 
     e.preventDefault()
-    const range = eventRangeFromSelection(selection.anchorMinutes, selection.currentMinutes)
+    const finalPosition = startState?.timeline
+      ? mobilePointerPosition(e, startState.timeline)
+      : null
+    const finalSelection = finalPosition
+      ? {
+          ...selection,
+          currentMinutes: finalPosition.minutes,
+          currentY: finalPosition.y
+        }
+      : selection
+    const range = eventRangeFromSelection(finalSelection.anchorMinutes, finalSelection.currentMinutes)
     openMobileNewEventModal({
       date: selectedMobileDate,
       startTime: minutesToTime(range.startMinutes),
@@ -3361,12 +3364,7 @@ export default function App() {
     resetMobileDragCreate({ keepPreview: true })
   }
 
-  function cancelMobileLongPressCreate(e) {
-    if (mobileDragSelectionRef.current) {
-      finishMobileLongPressCreate(e)
-      return
-    }
-
+  function cancelMobileLongPressCreate() {
     resetMobileDragCreate()
   }
 
@@ -3514,7 +3512,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mobile-view" aria-label="スマホ専用表示">
+      <main className={`mobile-view mobile-page-${mobileActivePage}`} aria-label="スマホ専用表示">
         <section className="mobile-top-card">
           <div className="mobile-date">
             <span>今日</span>
@@ -3589,6 +3587,10 @@ export default function App() {
 
             <div
               className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
+              style={{
+                height: `${MOBILE_TIMELINE_HEIGHT}px`,
+                '--mobile-hour-height': `${MOBILE_HOUR_HEIGHT}px`
+              }}
               onPointerDown={startMobileLongPressCreate}
               onPointerMove={moveMobileLongPressCreate}
               onPointerUp={finishMobileLongPressCreate}
@@ -3598,52 +3600,51 @@ export default function App() {
               onContextMenu={e => {
                 e.preventDefault()
               }}
-	            >
-	              {mobileDragSelection && mobileDragRange && (
-	                <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
-	                  <span>
-	                    {mobileDragRange.startMinutes === mobileDragRange.endMinutes
-	                      ? minutesToTime(mobileDragRange.startMinutes)
-	                      : `${minutesToTime(mobileDragRange.startMinutes)}〜${minutesToTime(mobileDragRange.endMinutes)}`}
-	                  </span>
-	                </div>
-	              )}
-              {HOURS.map(hour => {
-                const hourStart = hour * 60
-                const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
-                const hourEvents = selectedMobileEvents.filter(event => {
-                  const startMinutes = minutesFromTime(event.startTime)
-                  return startMinutes >= hourStart && startMinutes < hourEnd
-                })
-
-                return (
+            >
+              <div className="mobile-timeline-grid" aria-hidden="true">
+                {MOBILE_TIMELINE_HOURS.map(hour => (
                   <div key={hour} className="mobile-hour-row" data-hour={hour}>
-                    {selectedMobileDate === currentDateISO && hour === currentHour && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
-                      <div
-                        className="mobile-current-time-line"
-                        style={{ top: `${((currentMinutes - hourStart) / 60) * 100}%` }}
-                        aria-hidden="true"
-                      />
-                    )}
                     <div className="mobile-hour-label">
-                      {hour === 24 ? '24:00' : `${String(hour).padStart(2, '0')}:00`}
+                      {`${String(hour).padStart(2, '0')}:00`}
                     </div>
-                    <div className="mobile-hour-events">
-                      {hourEvents.map(event => (
-                        <button
-                          key={event.id}
-	                          type="button"
-	                          className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
-	                          onClick={() => openMobileEventModal(event)}
-	                        >
-                          <span className="mobile-event-time">{event.startTime}〜{event.endTime}</span>
-                          <span className="mobile-event-title">{event.title || '無題の予定'}</span>
-                        </button>
-                      ))}
-                    </div>
+                    <div className="mobile-hour-line" />
                   </div>
-                )
-              })}
+                ))}
+                <div className="mobile-hour-end-label">24:00</div>
+              </div>
+
+              {selectedMobileDate === currentDateISO && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
+                <div
+                  className="mobile-current-time-line"
+                  style={{ top: `${mobileTimelineYForMinutes(currentMinutes)}px` }}
+                  aria-hidden="true"
+                />
+              )}
+
+              {mobileDragSelection && mobileDragRange && (
+                <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
+                  <span>
+                    {mobileDragRange.startMinutes === mobileDragRange.endMinutes
+                      ? minutesToTime(mobileDragRange.startMinutes)
+                      : `${minutesToTime(mobileDragRange.startMinutes)}〜${minutesToTime(mobileDragRange.endMinutes)}`}
+                  </span>
+                </div>
+              )}
+
+              <div className="mobile-event-layer">
+                {selectedMobileEvents.map(event => (
+                  <button
+                    key={event.id}
+                    type="button"
+                    className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
+                    style={mobileEventBlockStyle(event)}
+                    onClick={() => openMobileEventModal(event)}
+                    aria-label={`${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`}
+                  >
+                    <span className="mobile-event-title">{event.title || '無題の予定'}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </section>
         )}
@@ -3692,36 +3693,48 @@ export default function App() {
               <strong>{monthViewTitle}</strong>
               <button type="button" onClick={() => changeMonthView(1)} aria-label="翌月">&gt;</button>
             </div>
-            <div className="mobile-month-weekdays" aria-hidden="true">
-              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
-                <span key={day}>{day}</span>
-              ))}
-            </div>
-            <div className="mobile-month-grid">
-              {monthCalendarCells.map((dateISO, index) => {
-                if (!dateISO) {
-                  return <div className="mobile-month-day empty" key={`mobile-month-empty-${index}`} aria-hidden="true" />
-                }
+            <div className="mobile-month-calendar-shell">
+              <div className="mobile-month-weekdays" aria-hidden="true">
+                {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+                  <span key={day}>{day}</span>
+                ))}
+              </div>
+              <div className="mobile-month-grid">
+                {monthCalendarCells.map((dateISO, index) => {
+                  if (!dateISO) {
+                    return <div className="mobile-month-day empty" key={`mobile-month-empty-${index}`} aria-hidden="true" />
+                  }
 
-                const date = dateFromISO(dateISO)
-                const weekendClass = dayHeaderTone(date)
-                const isToday = dateISO === currentDateISO
-                const isSelected = dateISO === selectedMonthDate
-                const dayEvents = eventsFor(dateISO)
-                const hasEvents = dayEvents.length > 0
+                  const date = dateFromISO(dateISO)
+                  const weekendClass = dayHeaderTone(date)
+                  const isToday = dateISO === currentDateISO
+                  const isSelected = dateISO === selectedMonthDate
+                  const dayEvents = eventsFor(dateISO)
 
-                return (
-                  <button
-                    type="button"
-                    key={dateISO}
-                    className={`mobile-month-day ${weekendClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
-                    onClick={() => selectMonthDate(dateISO)}
-                  >
-                    <span className="mobile-month-date">{date.getDate()}</span>
-                    {hasEvents && <span className="mobile-month-dot" aria-label="予定あり" />}
-                  </button>
-                )
-              })}
+                  return (
+                    <button
+                      type="button"
+                      key={dateISO}
+                      className={`mobile-month-day ${weekendClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                      onClick={() => selectMonthDate(dateISO)}
+                    >
+                      <span className="mobile-month-date">{date.getDate()}</span>
+                      {dayEvents.length > 0 && (
+                        <span className="mobile-month-day-events">
+                          {dayEvents.slice(0, 2).map(event => (
+                            <span className="mobile-month-event-chip" key={event.id}>
+                              {event.title || '無題の予定'}
+                            </span>
+                          ))}
+                          {dayEvents.length > 2 && (
+                            <span className="mobile-month-event-more">+{dayEvents.length - 2}</span>
+                          )}
+                        </span>
+                      )}
+                    </button>
+                  )
+                })}
+              </div>
             </div>
             <div className="mobile-month-detail">
               <h3>{selectedMonthDateLabel}</h3>
@@ -3730,26 +3743,26 @@ export default function App() {
                 <p className="mobile-empty">この日の予定はありません</p>
               ) : (
                 <ul className="mobile-month-event-list">
-	                  {selectedMonthEvents.map(event => (
-	                    <li key={event.id} className={`mobile-month-detail-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
-	                      <button type="button" onClick={() => openMobileEventModal(event)}>
-	                        <span className="mobile-month-detail-time">{event.startTime}〜{event.endTime}</span>
-	                        <span className="mobile-month-detail-name">{event.title || '無題の予定'}</span>
-	                      </button>
-	                    </li>
-	                  ))}
+                  {selectedMonthEvents.map(event => (
+                    <li key={event.id} className={`mobile-month-detail-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+                      <button type="button" onClick={() => openMobileEventModal(event)}>
+                        <span className="mobile-month-detail-time">{event.startTime}〜{event.endTime}</span>
+                        <span className="mobile-month-detail-name">{event.title || '無題の予定'}</span>
+                      </button>
+                    </li>
+                  ))}
                 </ul>
               )}
             </div>
             <button
               type="button"
-	              className="mobile-month-add-button"
-	              onClick={() => openMobileNewEventModal({ date: selectedMonthDate })}
-	              aria-label="選択日に予定を追加"
-	            >
-	              +
-	            </button>
-	          </section>
+              className="mobile-month-add-button"
+              onClick={() => openMobileNewEventModal({ date: selectedMonthDate })}
+              aria-label="選択日に予定を追加"
+            >
+              +
+            </button>
+          </section>
         )}
 
         {mobileActivePage === 'memo' && (
