@@ -682,6 +682,10 @@ function reminderOffsetsForEvent(event) {
     return sortReminderOffsets(event.reminderOffsets)
   }
 
+  if (Array.isArray(event.reminders)) {
+    return sortReminderOffsets(event.reminders)
+  }
+
   if (event.reminderOffset !== undefined && event.reminderOffset !== null) {
     if (event.reminderOffset === '') return []
     return sortReminderOffsets([event.reminderOffset])
@@ -1106,15 +1110,32 @@ export default function App() {
   })
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
-  const [mobilePendingEvent, setMobilePendingEvent] = useState(null)
-  const [mobilePendingTitle, setMobilePendingTitle] = useState('')
-  const [mobileMonthEventFormOpen, setMobileMonthEventFormOpen] = useState(false)
+  const [isEventModalOpen, setIsEventModalOpen] = useState(false)
+  const [editingEventId, setEditingEventId] = useState(null)
+  const [draftEventTitle, setDraftEventTitle] = useState('')
+  const [draftEventDate, setDraftEventDate] = useState(() => formatISO(new Date()))
+  const [draftEventStart, setDraftEventStart] = useState('09:00')
+  const [draftEventEnd, setDraftEventEnd] = useState('10:00')
+  const [draftEventReminders, setDraftEventReminders] = useState(DEFAULT_EVENT_REMINDER_OFFSETS)
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
   useEffect(() => saveMemos(memos), [memos])
   useEffect(() => saveFiredReminders(firedReminders), [firedReminders])
   useEffect(() => saveGoogleConnected(googleConnected), [googleConnected])
+  useEffect(() => {
+    if (!isEventModalOpen) return undefined
+
+    const previousBodyOverflow = document.body.style.overflow
+    const previousDocumentOverflow = document.documentElement.style.overflow
+    document.body.style.overflow = 'hidden'
+    document.documentElement.style.overflow = 'hidden'
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow
+      document.documentElement.style.overflow = previousDocumentOverflow
+    }
+  }, [isEventModalOpen])
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
       window.clearTimeout(mobileLongPressTimerRef.current)
@@ -1210,6 +1231,9 @@ export default function App() {
   const mobileEventEndOptions = useMemo(() => (
     TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(mobileEventDraft.startTime))
   ), [mobileEventDraft.startTime])
+  const draftEventEndOptions = useMemo(() => (
+    TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(draftEventStart))
+  ), [draftEventStart])
   const monthViewTitle = monthViewMonth.toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long'
@@ -2309,25 +2333,6 @@ export default function App() {
     setMonthEventDraft(prev => ({ ...prev, title: '' }))
   }
 
-  function addMobileMonthEvent(e) {
-    e.preventDefault()
-    const title = monthEventDraft.title.trim()
-    if (!title) return
-
-    const normalizedTimes = normalizeEventTimeRange(
-      monthEventDraft.startTime,
-      monthEventDraft.endTime
-    )
-
-    saveMobileEvent({
-      date: selectedMonthDate,
-      title,
-      ...normalizedTimes
-    })
-    setMonthEventDraft(prev => ({ ...prev, title: '' }))
-    setMobileMonthEventFormOpen(false)
-  }
-
   function addMobileEvent(e) {
     e.preventDefault()
     const title = mobileEventDraft.title.trim()
@@ -2392,6 +2397,90 @@ export default function App() {
     setMemos(prev => ({ ...prev, [mobileMemoKey]: value }))
   }
 
+  function openMobileEventModal(event) {
+    const normalizedEvent = normalizePlannerEvent(event)
+    setEditingEventId(normalizedEvent.id || null)
+    setDraftEventTitle(normalizedEvent.title || '')
+    setDraftEventDate(normalizedEvent.date || selectedMobileDate)
+    setDraftEventStart(normalizedEvent.startTime)
+    setDraftEventEnd(normalizedEvent.endTime)
+    setDraftEventReminders(reminderOffsetsForEvent(normalizedEvent))
+    setIsEventModalOpen(true)
+  }
+
+  function openMobileNewEventModal({ date = selectedMobileDate, startTime = '09:00', endTime = '10:00' } = {}) {
+    const normalizedTimes = normalizeEventTimeRange(startTime, endTime)
+    setEditingEventId(null)
+    setDraftEventTitle('')
+    setDraftEventDate(date)
+    setDraftEventStart(normalizedTimes.startTime)
+    setDraftEventEnd(normalizedTimes.endTime)
+    setDraftEventReminders(DEFAULT_EVENT_REMINDER_OFFSETS)
+    setIsEventModalOpen(true)
+  }
+
+  function closeMobileEventModal() {
+    setIsEventModalOpen(false)
+    setEditingEventId(null)
+    resetMobileDragCreate()
+  }
+
+  function updateDraftEventStart(startTime) {
+    setDraftEventStart(startTime)
+    setDraftEventEnd(prev => {
+      const startMinutes = minutesFromTime(startTime)
+      const endMinutes = minutesFromTime(prev)
+      return endMinutes > startMinutes
+        ? prev
+        : minutesToTime(Math.min(startMinutes + STEP_MINUTES, GRID_END_MINUTES))
+    })
+  }
+
+  function toggleDraftReminder(offset) {
+    setDraftEventReminders(prev => {
+      if (prev.includes(offset)) {
+        return prev.filter(item => item !== offset)
+      }
+      return sortReminderOffsets([...prev, offset])
+    })
+  }
+
+  function saveMobileEventModal(e) {
+    e.preventDefault()
+    const title = draftEventTitle.trim() || '無題の予定'
+    const normalizedTimes = normalizeEventTimeRange(draftEventStart, draftEventEnd)
+    const eventData = {
+      title,
+      date: draftEventDate,
+      ...normalizedTimes,
+      reminderOffsets: draftEventReminders,
+      reminders: draftEventReminders
+    }
+
+    if (editingEventId) {
+      const existingEvent = eventsRef.current.find(item => item.id === editingEventId)
+      if (!existingEvent) {
+        closeMobileEventModal()
+        return
+      }
+
+      saveEvent({
+        ...existingEvent,
+        ...eventData
+      })
+    } else {
+      saveMobileEvent(eventData)
+    }
+
+    closeMobileEventModal()
+  }
+
+  function deleteMobileEventModal() {
+    if (!editingEventId) return
+    deleteEvent(editingEventId)
+    closeMobileEventModal()
+  }
+
   function clearMobileLongPressTimer() {
     if (!mobileLongPressTimerRef.current) return
     window.clearTimeout(mobileLongPressTimerRef.current)
@@ -2408,12 +2497,15 @@ export default function App() {
     }
   }
 
-  function resetMobileDragCreate() {
+  function resetMobileDragCreate(options = {}) {
+    const { keepPreview = false } = options
     releaseMobilePointerCapture(mobileDragStartRef.current)
     clearMobileLongPressTimer()
     mobileDragStartRef.current = null
-    mobileDragSelectionRef.current = null
-    setMobileDragSelection(null)
+    if (!keepPreview) {
+      mobileDragSelectionRef.current = null
+      setMobileDragSelection(null)
+    }
   }
 
   function startMobileLongPressCreate(e) {
@@ -2498,13 +2590,12 @@ export default function App() {
 
     e.preventDefault()
     const range = eventRangeFromSelection(selection.anchorMinutes, selection.currentMinutes)
-    setMobilePendingEvent({
+    openMobileNewEventModal({
       date: selectedMobileDate,
       startTime: minutesToTime(range.startMinutes),
       endTime: minutesToTime(range.endMinutes)
     })
-    setMobilePendingTitle('')
-    resetMobileDragCreate()
+    resetMobileDragCreate({ keepPreview: true })
   }
 
   function cancelMobileLongPressCreate(e) {
@@ -2514,19 +2605,6 @@ export default function App() {
     }
 
     resetMobileDragCreate()
-  }
-
-  function saveMobilePendingEvent(e) {
-    e.preventDefault()
-    const title = mobilePendingTitle.trim()
-    if (!title || !mobilePendingEvent) return
-
-    saveMobileEvent({
-      ...mobilePendingEvent,
-      title
-    })
-    setMobilePendingEvent(null)
-    setMobilePendingTitle('')
   }
 
   function isEventInProgress(event) {
@@ -2742,31 +2820,6 @@ export default function App() {
               </div>
             </form>
 
-            {mobilePendingEvent && (
-              <form className="mobile-pending-event-form" onSubmit={saveMobilePendingEvent}>
-                <span>{mobilePendingEvent.startTime}〜{mobilePendingEvent.endTime}</span>
-                <input
-                  type="text"
-                  placeholder="予定タイトル"
-                  value={mobilePendingTitle}
-                  onChange={e => setMobilePendingTitle(e.target.value)}
-                />
-                <div>
-                  <button type="submit">保存</button>
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => {
-                      setMobilePendingEvent(null)
-                      setMobilePendingTitle('')
-                    }}
-                  >
-                    キャンセル
-                  </button>
-                </div>
-              </form>
-            )}
-
             <div
               className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
               onPointerDown={startMobileLongPressCreate}
@@ -2808,10 +2861,10 @@ export default function App() {
                       {hourEvents.map(event => (
                         <button
                           key={event.id}
-                          type="button"
-                          className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
-                          onClick={() => openEdit(event)}
-                        >
+	                          type="button"
+	                          className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
+	                          onClick={() => openMobileEventModal(event)}
+	                        >
                           <span className="mobile-event-time">{event.startTime}〜{event.endTime}</span>
                           <span className="mobile-event-title">{event.title || '無題の予定'}</span>
                         </button>
@@ -2906,58 +2959,26 @@ export default function App() {
                 <p className="mobile-empty">この日の予定はありません</p>
               ) : (
                 <ul className="mobile-month-event-list">
-                  {selectedMonthEvents.map(event => (
-                    <li key={event.id} className={`mobile-month-detail-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
-                      <span className="mobile-month-detail-time">{event.startTime}〜{event.endTime}</span>
-                      <span className="mobile-month-detail-name">{event.title || '無題の予定'}</span>
-                    </li>
-                  ))}
+	                  {selectedMonthEvents.map(event => (
+	                    <li key={event.id} className={`mobile-month-detail-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+	                      <button type="button" onClick={() => openMobileEventModal(event)}>
+	                        <span className="mobile-month-detail-time">{event.startTime}〜{event.endTime}</span>
+	                        <span className="mobile-month-detail-name">{event.title || '無題の予定'}</span>
+	                      </button>
+	                    </li>
+	                  ))}
                 </ul>
               )}
             </div>
             <button
               type="button"
-              className="mobile-month-add-button"
-              onClick={() => setMobileMonthEventFormOpen(true)}
-              aria-label="選択日に予定を追加"
-            >
-              +
-            </button>
-            {mobileMonthEventFormOpen && (
-              <form className="mobile-month-add-panel" onSubmit={addMobileMonthEvent}>
-                <div className="mobile-month-add-head">
-                  <strong>{selectedMonthDateShortLabel}に予定追加</strong>
-                  <button type="button" onClick={() => setMobileMonthEventFormOpen(false)}>×</button>
-                </div>
-                <input
-                  type="text"
-                  placeholder="予定タイトル"
-                  value={monthEventDraft.title}
-                  onChange={e => setMonthEventDraft(prev => ({ ...prev, title: e.target.value }))}
-                />
-                <div className="mobile-time-row">
-                  <select
-                    value={monthEventDraft.startTime}
-                    onChange={e => updateMonthEventStart(e.target.value)}
-                  >
-                    {START_TIME_OPTIONS.map(slot => (
-                      <option key={slot} value={slot}>{slot}</option>
-                    ))}
-                  </select>
-                  <span>〜</span>
-                  <select
-                    value={monthEventDraft.endTime}
-                    onChange={e => setMonthEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
-                  >
-                    {monthEventEndOptions.map(slot => (
-                      <option key={slot} value={slot}>{slot}</option>
-                    ))}
-                  </select>
-                  <button type="submit">追加</button>
-                </div>
-              </form>
-            )}
-          </section>
+	              className="mobile-month-add-button"
+	              onClick={() => openMobileNewEventModal({ date: selectedMonthDate })}
+	              aria-label="選択日に予定を追加"
+	            >
+	              +
+	            </button>
+	          </section>
         )}
 
         {mobileActivePage === 'memo' && (
@@ -3542,6 +3563,95 @@ export default function App() {
           </section>
         </div>
       </main>
+      )}
+
+      {isEventModalOpen && (
+        <div className="mobile-event-modal-backdrop" role="presentation" onClick={closeMobileEventModal}>
+          <form
+            className="mobile-event-modal"
+            onClick={e => e.stopPropagation()}
+            onSubmit={saveMobileEventModal}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="mobile-event-modal-title"
+          >
+            <h3 id="mobile-event-modal-title">予定を編集</h3>
+            <label className="mobile-event-modal-field">
+              <span>タイトル</span>
+              <input
+                type="text"
+                value={draftEventTitle}
+                onChange={e => setDraftEventTitle(e.target.value)}
+                placeholder="予定タイトル"
+                autoFocus
+                autoCorrect="off"
+                autoCapitalize="off"
+                spellCheck={false}
+              />
+            </label>
+            <label className="mobile-event-modal-field">
+              <span>日付</span>
+              <input
+                type="date"
+                value={draftEventDate}
+                onChange={e => setDraftEventDate(e.target.value)}
+              />
+            </label>
+            <div className="mobile-event-modal-time-row">
+              <label className="mobile-event-modal-field">
+                <span>開始</span>
+                <select value={draftEventStart} onChange={e => updateDraftEventStart(e.target.value)}>
+                  {START_TIME_OPTIONS.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="mobile-event-modal-field">
+                <span>終了</span>
+                <select value={draftEventEnd} onChange={e => setDraftEventEnd(e.target.value)}>
+                  {draftEventEndOptions.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <fieldset className="mobile-event-modal-reminders">
+              <legend>リマインダー</legend>
+              <div className="mobile-event-reminder-chips">
+                <button
+                  type="button"
+                  className={`mobile-event-reminder-chip none ${draftEventReminders.length === 0 ? 'active' : ''}`}
+                  onClick={() => setDraftEventReminders([])}
+                >
+                  通知なし
+                </button>
+                {EVENT_REMINDER_CHOICES.map(option => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    className={`mobile-event-reminder-chip ${draftEventReminders.includes(option.value) ? 'active' : ''}`}
+                    onClick={() => toggleDraftReminder(option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+            <div className="mobile-event-modal-actions">
+              <button type="button" className="cancel" onClick={closeMobileEventModal}>
+                キャンセル
+              </button>
+              {editingEventId && (
+                <button type="button" className="delete" onClick={deleteMobileEventModal}>
+                  削除
+                </button>
+              )}
+              <button type="submit" className="save">
+                保存
+              </button>
+            </div>
+          </form>
+        </div>
       )}
 
       {activeReminders.length > 0 && (
