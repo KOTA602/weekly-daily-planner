@@ -254,6 +254,7 @@
   gap: 8px;
   min-width: 0;
 }
+.cloud-sync,
 .google-sync {
   display: flex;
   align-items: center;
@@ -265,12 +266,25 @@
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
 }
+.cloud-sync {
+  padding-right: 8px;
+}
+.cloud-dot,
 .google-dot {
   width: 7px;
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
   background: #a8a8a8;
+}
+.cloud-sync.connected .cloud-dot,
+.cloud-sync.saving .cloud-dot,
+.cloud-sync.loading .cloud-dot {
+  background: #2f8f5b;
+}
+.cloud-sync.error .cloud-dot,
+.cloud-sync.missing-config .cloud-dot {
+  background: #d25b3d;
 }
 .google-sync.connected .google-dot,
 .google-sync.syncing .google-dot,
@@ -284,6 +298,7 @@
 .google-sync.reauth .google-dot {
   background: #f97316;
 }
+.cloud-text,
 .google-text {
   min-width: 0;
   overflow: hidden;
@@ -2720,6 +2735,7 @@
     width: 100%;
     justify-content: space-between;
   }
+  .cloud-sync,
   .google-sync {
     max-width: none;
     flex: 1 1 auto;

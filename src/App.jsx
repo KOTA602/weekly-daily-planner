@@ -20,6 +20,13 @@ const GOOGLE_CONFIG = {
   clientId: import.meta.env.VITE_GOOGLE_CLIENT_ID || '',
   apiKey: import.meta.env.VITE_GOOGLE_API_KEY || ''
 }
+const SUPABASE_CONFIG = {
+  url: import.meta.env.VITE_SUPABASE_URL || '',
+  anonKey: import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+}
+const SUPABASE_SAVE_DEBOUNCE_MS = 650
+const SUPABASE_PULL_INTERVAL_MS = 30 * 1000
+const SUPABASE_DELETE_CHUNK_SIZE = 50
 const MIN_WEEK = startOfWeek(new Date('2026-01-01'))
 const MAX_WEEK = startOfWeek(new Date('2030-12-31'))
 
@@ -914,6 +921,401 @@ function saveGoogleConnected(connected) {
   }
 }
 
+function isSupabaseConfigured() {
+  return Boolean(SUPABASE_CONFIG.url && SUPABASE_CONFIG.anonKey)
+}
+
+function supabaseBaseUrl() {
+  return SUPABASE_CONFIG.url.replace(/\/+$/, '')
+}
+
+function supabaseHeaders(extraHeaders = {}) {
+  return {
+    apikey: SUPABASE_CONFIG.anonKey,
+    Authorization: `Bearer ${SUPABASE_CONFIG.anonKey}`,
+    ...extraHeaders
+  }
+}
+
+async function readSupabaseResponse(response) {
+  if (response.status === 204) return null
+
+  const text = await response.text()
+  if (!text) return null
+
+  try {
+    return JSON.parse(text)
+  } catch {
+    return text
+  }
+}
+
+async function supabaseRequest(path, options = {}) {
+  const { headers = {}, ...requestOptions } = options
+  const response = await fetch(`${supabaseBaseUrl()}/rest/v1/${path}`, {
+    ...requestOptions,
+    headers: supabaseHeaders(headers)
+  })
+
+  if (!response.ok) {
+    const errorBody = await readSupabaseResponse(response).catch(() => null)
+    const message = errorBody?.message
+      || errorBody?.error_description
+      || errorBody?.hint
+      || 'Supabase request failed'
+    const error = new Error(message)
+    error.status = response.status
+    error.statusText = response.statusText
+    error.errorBody = errorBody
+    throw error
+  }
+
+  return readSupabaseResponse(response)
+}
+
+async function listSupabaseRows(table) {
+  const params = new URLSearchParams({ select: '*' })
+  return await supabaseRequest(`${table}?${params.toString()}`, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json'
+    }
+  }) || []
+}
+
+async function upsertSupabaseRows(table, rows) {
+  if (!rows.length) return
+
+  const params = new URLSearchParams({ on_conflict: 'id' })
+  await supabaseRequest(`${table}?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Prefer: 'resolution=merge-duplicates,return=minimal'
+    },
+    body: JSON.stringify(rows)
+  })
+}
+
+function supabaseInFilterValue(value) {
+  return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+async function deleteSupabaseRows(table, ids) {
+  if (!ids.length) return
+
+  for (let i = 0; i < ids.length; i += SUPABASE_DELETE_CHUNK_SIZE) {
+    const chunk = ids.slice(i, i + SUPABASE_DELETE_CHUNK_SIZE)
+    const params = new URLSearchParams({
+      id: `in.(${chunk.map(supabaseInFilterValue).join(',')})`
+    })
+
+    await supabaseRequest(`${table}?${params.toString()}`, {
+      method: 'DELETE',
+      headers: {
+        Prefer: 'return=minimal'
+      }
+    })
+  }
+}
+
+function rowsById(rows) {
+  const map = new Map()
+  rows.forEach(row => {
+    if (row?.id) map.set(row.id, row)
+  })
+  return map
+}
+
+async function syncSupabaseRows(table, rows, previousRows = new Map()) {
+  const currentIds = new Set(rows.map(row => row.id).filter(Boolean))
+  const deletedIds = Array.from(previousRows.keys()).filter(id => !currentIds.has(id))
+
+  await upsertSupabaseRows(table, rows)
+  await deleteSupabaseRows(table, deletedIds)
+
+  return rowsById(rows)
+}
+
+function arrayFromMaybeJson(value) {
+  if (Array.isArray(value)) return value
+  if (typeof value !== 'string') return []
+
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function normalizedSupabaseDate(value) {
+  return value || null
+}
+
+function eventToSupabaseRow(event, previousRow = null, timestamp = new Date().toISOString()) {
+  const normalizedEvent = normalizePlannerEvent(event)
+  const reminders = reminderOffsetsForEvent(normalizedEvent)
+  const createdAt = normalizedEvent.createdAt
+    || previousRow?.createdAt
+    || previousRow?.created_at
+    || timestamp
+
+  return {
+    id: normalizedEvent.id,
+    title: normalizedEvent.title || '',
+    date: normalizedEvent.date,
+    startTime: normalizedEvent.startTime,
+    endTime: normalizedEvent.endTime,
+    googleEventId: normalizedEvent.googleEventId || null,
+    reminders,
+    createdAt,
+    updatedAt: timestamp
+  }
+}
+
+function eventsToSupabaseRows(events, previousRows = new Map(), timestamp = new Date().toISOString()) {
+  return events
+    .filter(event => event.id)
+    .map(event => eventToSupabaseRow(event, previousRows.get(event.id), timestamp))
+}
+
+function normalizeSupabaseEvent(row) {
+  const id = row.id || createLocalId('event')
+  const reminders = sortReminderOffsets(arrayFromMaybeJson(
+    row.reminders ?? row.reminderOffsets ?? row.reminder_offsets
+  ))
+  const normalizedTimes = normalizeEventTimeRange(
+    row.startTime ?? row.start_time ?? row.starttime ?? '05:00',
+    row.endTime ?? row.end_time ?? row.endtime ?? '06:00'
+  )
+  const source = id.startsWith(`${GOOGLE_EVENT_SOURCE}-`) ? GOOGLE_EVENT_SOURCE : undefined
+
+  return {
+    id,
+    title: row.title || '',
+    date: row.date || formatISO(new Date()),
+    ...normalizedTimes,
+    googleEventId: row.googleEventId ?? row.google_event_id ?? null,
+    reminders,
+    reminderOffsets: reminders,
+    createdAt: row.createdAt ?? row.created_at ?? '',
+    updatedAt: row.updatedAt ?? row.updated_at ?? '',
+    ...(source ? { source } : {})
+  }
+}
+
+function taskToSupabaseRow(task, previousRow = null, timestamp = new Date().toISOString()) {
+  const createdAt = task.createdAt
+    || previousRow?.createdAt
+    || previousRow?.created_at
+    || timestamp
+
+  return {
+    id: task.id,
+    title: task.title || '',
+    date: task.date && task.date !== UNDATED_TASK_DATE ? task.date : null,
+    completed: Boolean(task.completed),
+    order: taskOrderValue(task),
+    createdAt,
+    updatedAt: timestamp
+  }
+}
+
+function tasksToSupabaseRows(tasks, previousRows = new Map(), timestamp = new Date().toISOString()) {
+  return tasks
+    .filter(task => task.id)
+    .map(task => taskToSupabaseRow(task, previousRows.get(task.id), timestamp))
+}
+
+function normalizeSupabaseTask(row) {
+  const task = {
+    id: row.id || createLocalId('task'),
+    title: row.title || '',
+    completed: Boolean(row.completed),
+    order: taskOrderValue(row),
+    createdAt: row.createdAt ?? row.created_at ?? '',
+    updatedAt: row.updatedAt ?? row.updated_at ?? ''
+  }
+
+  if (normalizedSupabaseDate(row.date)) {
+    task.date = row.date
+  }
+
+  return task
+}
+
+function memoDateFromKey(key) {
+  if (key.startsWith(DASHBOARD_MEMO_PREFIX)) {
+    return key.slice(DASHBOARD_MEMO_PREFIX.length) || null
+  }
+
+  return null
+}
+
+function memoKeyFromSupabaseRow(row) {
+  if (row.id === SHARED_MEMO_KEY) return SHARED_MEMO_KEY
+  if (row.id?.startsWith(DASHBOARD_MEMO_PREFIX)) return row.id
+  if (row.date) return dashboardMemoStorageKey(row.date)
+  return row.id || SHARED_MEMO_KEY
+}
+
+function memosToSupabaseRows(memos, previousRows = new Map(), timestamp = new Date().toISOString()) {
+  return Object.entries(memos)
+    .filter(([id]) => Boolean(id))
+    .map(([id, content]) => {
+      const previousRow = previousRows.get(id)
+      const createdAt = previousRow?.createdAt || previousRow?.created_at || timestamp
+
+      return {
+        id,
+        date: id === SHARED_MEMO_KEY ? null : memoDateFromKey(id),
+        content: String(content ?? ''),
+        createdAt,
+        updatedAt: timestamp
+      }
+    })
+}
+
+function memosFromSupabaseRows(rows) {
+  return rows.reduce((nextMemos, row) => {
+    const key = memoKeyFromSupabaseRow(row)
+    nextMemos[key] = String(row.content ?? '')
+    return nextMemos
+  }, {})
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeSupabaseJsonValue(value) {
+  if (isPlainObject(value)) return value
+  if (typeof value !== 'string') return {}
+
+  try {
+    const parsed = JSON.parse(value)
+    return isPlainObject(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function plannerSettingsPayload({ firedReminders = {}, notificationPermission = 'default' } = {}) {
+  return {
+    firedReminders: isPlainObject(firedReminders) ? firedReminders : {},
+    notificationPermission
+  }
+}
+
+function settingsToSupabaseRows(settings, previousRows = new Map(), timestamp = new Date().toISOString()) {
+  const previousRow = previousRows.get('app')
+
+  return [{
+    id: 'app',
+    value: plannerSettingsPayload(settings),
+    createdAt: previousRow?.createdAt || previousRow?.created_at || timestamp,
+    updatedAt: timestamp
+  }]
+}
+
+function settingsFromSupabaseRows(rows) {
+  const row = rows.find(item => item.id === 'app') || rows[0]
+  if (!row) return {}
+
+  return normalizeSupabaseJsonValue(row.value ?? row.settings)
+}
+
+async function loadPlannerDataFromSupabase() {
+  const [eventRows, taskRows, memoRows, settingsRows] = await Promise.all([
+    listSupabaseRows('events'),
+    listSupabaseRows('tasks'),
+    listSupabaseRows('memos'),
+    listSupabaseRows('settings')
+  ])
+
+  return {
+    events: eventRows.map(normalizeSupabaseEvent),
+    tasks: normalizeTasks(taskRows.map(normalizeSupabaseTask)),
+    memos: memosFromSupabaseRows(memoRows),
+    settings: settingsFromSupabaseRows(settingsRows)
+  }
+}
+
+function plannerDataHasContent(data) {
+  return data.events.length > 0
+    || data.tasks.length > 0
+    || Object.keys(data.memos).length > 0
+}
+
+function comparableEvents(events) {
+  return events
+    .map(event => {
+      const normalizedEvent = normalizePlannerEvent(event)
+      return {
+        id: normalizedEvent.id,
+        title: normalizedEvent.title || '',
+        date: normalizedEvent.date || '',
+        startTime: normalizedEvent.startTime,
+        endTime: normalizedEvent.endTime,
+        googleEventId: normalizedEvent.googleEventId || null,
+        reminders: reminderOffsetsForEvent(normalizedEvent)
+      }
+    })
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+function comparableTasks(tasks) {
+  return normalizeTasks(tasks)
+    .map(task => ({
+      id: task.id,
+      title: task.title || '',
+      date: task.date && task.date !== UNDATED_TASK_DATE ? task.date : null,
+      completed: Boolean(task.completed),
+      order: taskOrderValue(task)
+    }))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+function comparableMemos(memos) {
+  return Object.entries(memos)
+    .map(([id, content]) => ({ id, content: String(content ?? '') }))
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+}
+
+function comparableSettings(settings = {}) {
+  const normalizedSettings = plannerSettingsPayload(settings)
+
+  return {
+    firedReminders: Object.entries(normalizedSettings.firedReminders)
+      .map(([id, fired]) => ({ id, fired: Boolean(fired) }))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    notificationPermission: normalizedSettings.notificationPermission || 'default'
+  }
+}
+
+function plannerDataSignature(data) {
+  return JSON.stringify({
+    events: comparableEvents(data.events),
+    tasks: comparableTasks(data.tasks),
+    memos: comparableMemos(data.memos),
+    settings: comparableSettings(data.settings)
+  })
+}
+
+function plannerDataEquals(a, b) {
+  return plannerDataSignature(a) === plannerDataSignature(b)
+}
+
+function supabaseRowsFromPlannerData(data, previousRows = {}, timestamp = new Date().toISOString()) {
+  return {
+    events: eventsToSupabaseRows(data.events, previousRows.events, timestamp),
+    tasks: tasksToSupabaseRows(data.tasks, previousRows.tasks, timestamp),
+    memos: memosToSupabaseRows(data.memos, previousRows.memos, timestamp),
+    settings: settingsToSupabaseRows(data.settings, previousRows.settings, timestamp)
+  }
+}
+
 function formatClock(date) {
   return date.toLocaleTimeString('ja-JP', {
     hour: '2-digit',
@@ -1034,15 +1436,32 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
 
 export default function App() {
   const googleConfigured = Boolean(GOOGLE_CONFIG.clientId)
+  const supabaseConfigured = isSupabaseConfigured()
   const googleTokenClient = useRef(null)
   const googleAccessTokenRef = useRef('')
   const googleConnectedRef = useRef(googleConfigured && defaultGoogleConnected())
   const eventsRef = useRef([])
+  const tasksRef = useRef([])
+  const memosRef = useRef({})
+  const firedRemindersRef = useRef({})
+  const notificationPermissionRef = useRef('default')
   const dragUpdatedEventRef = useRef(null)
   const pendingGoogleInsertIdsRef = useRef(new Set())
   const updateGoogleEventRef = useRef(null)
   const syncCurrentWeekWithGoogleRef = useRef(null)
   const isSyncingRef = useRef(false)
+  const initialPlannerDataRef = useRef(null)
+  const supabaseReadyRef = useRef(false)
+  const applyingSupabaseSnapshotRef = useRef(false)
+  const supabaseSaveTimersRef = useRef({ events: null, tasks: null, memos: null, settings: null })
+  const supabaseRowsRef = useRef({
+    events: new Map(),
+    tasks: new Map(),
+    memos: new Map(),
+    settings: new Map()
+  })
+  const supabasePushInFlightRef = useRef(0)
+  const lastLocalSupabaseChangeAtRef = useRef(0)
   const mobileLongPressTimerRef = useRef(null)
   const mobileDragStartRef = useRef(null)
   const mobileDragSelectionRef = useRef(null)
@@ -1055,6 +1474,9 @@ export default function App() {
   const [events, setEvents] = useState(() => defaultEvents())
   const [tasks, setTasks] = useState(() => defaultTasks())
   const [memos, setMemos] = useState(() => defaultMemos())
+  if (initialPlannerDataRef.current == null) {
+    initialPlannerDataRef.current = { events, tasks, memos }
+  }
   const [, setUndoStack] = useState([])
   const [editing, setEditing] = useState(null)
   const [dragSelection, setDragSelection] = useState(null)
@@ -1084,6 +1506,12 @@ export default function App() {
     if (!googleConfigured) return 'Google設定待ち'
     return defaultGoogleConnected() ? 'Google連携済み' : 'Google準備OK'
   })
+  const [cloudStatus, setCloudStatus] = useState(() => (
+    supabaseConfigured ? 'loading' : 'missing-config'
+  ))
+  const [cloudMessage, setCloudMessage] = useState(() => (
+    supabaseConfigured ? 'クラウド読込中' : 'クラウド設定待ち'
+  ))
   const [isSyncing, setIsSyncing] = useState(false)
   const [currentView, setCurrentView] = useState('planner')
   const [selectedDashboardDate, setSelectedDashboardDate] = useState(() => formatISO(new Date()))
@@ -1118,11 +1546,343 @@ export default function App() {
   const [draftEventEnd, setDraftEventEnd] = useState('10:00')
   const [draftEventReminders, setDraftEventReminders] = useState(DEFAULT_EVENT_REMINDER_OFFSETS)
 
-  useEffect(() => saveEvents(events), [events])
-  useEffect(() => saveTasks(tasks), [tasks])
-  useEffect(() => saveMemos(memos), [memos])
-  useEffect(() => saveFiredReminders(firedReminders), [firedReminders])
-  useEffect(() => saveGoogleConnected(googleConnected), [googleConnected])
+  useEffect(() => {
+    eventsRef.current = events
+    saveEvents(events)
+
+    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+
+    lastLocalSupabaseChangeAtRef.current = Date.now()
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+
+    if (supabaseSaveTimersRef.current.events) {
+      window.clearTimeout(supabaseSaveTimersRef.current.events)
+    }
+
+    const snapshot = events
+    supabaseSaveTimersRef.current.events = window.setTimeout(() => {
+      void (async () => {
+        supabasePushInFlightRef.current += 1
+        try {
+          const timestamp = new Date().toISOString()
+          const rows = eventsToSupabaseRows(snapshot, supabaseRowsRef.current.events, timestamp)
+          supabaseRowsRef.current.events = await syncSupabaseRows('events', rows, supabaseRowsRef.current.events)
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+        } catch (error) {
+          console.error('Supabase events sync failed', error)
+          setCloudStatus('error')
+          setCloudMessage('クラウド保存失敗')
+        } finally {
+          supabasePushInFlightRef.current -= 1
+        }
+      })()
+    }, SUPABASE_SAVE_DEBOUNCE_MS)
+  }, [events, supabaseConfigured])
+
+  useEffect(() => {
+    tasksRef.current = tasks
+    saveTasks(tasks)
+
+    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+
+    lastLocalSupabaseChangeAtRef.current = Date.now()
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+
+    if (supabaseSaveTimersRef.current.tasks) {
+      window.clearTimeout(supabaseSaveTimersRef.current.tasks)
+    }
+
+    const snapshot = tasks
+    supabaseSaveTimersRef.current.tasks = window.setTimeout(() => {
+      void (async () => {
+        supabasePushInFlightRef.current += 1
+        try {
+          const timestamp = new Date().toISOString()
+          const rows = tasksToSupabaseRows(snapshot, supabaseRowsRef.current.tasks, timestamp)
+          supabaseRowsRef.current.tasks = await syncSupabaseRows('tasks', rows, supabaseRowsRef.current.tasks)
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+        } catch (error) {
+          console.error('Supabase tasks sync failed', error)
+          setCloudStatus('error')
+          setCloudMessage('クラウド保存失敗')
+        } finally {
+          supabasePushInFlightRef.current -= 1
+        }
+      })()
+    }, SUPABASE_SAVE_DEBOUNCE_MS)
+  }, [tasks, supabaseConfigured])
+
+  useEffect(() => {
+    memosRef.current = memos
+    saveMemos(memos)
+
+    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+
+    lastLocalSupabaseChangeAtRef.current = Date.now()
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+
+    if (supabaseSaveTimersRef.current.memos) {
+      window.clearTimeout(supabaseSaveTimersRef.current.memos)
+    }
+
+    const snapshot = memos
+    supabaseSaveTimersRef.current.memos = window.setTimeout(() => {
+      void (async () => {
+        supabasePushInFlightRef.current += 1
+        try {
+          const timestamp = new Date().toISOString()
+          const rows = memosToSupabaseRows(snapshot, supabaseRowsRef.current.memos, timestamp)
+          supabaseRowsRef.current.memos = await syncSupabaseRows('memos', rows, supabaseRowsRef.current.memos)
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+        } catch (error) {
+          console.error('Supabase memos sync failed', error)
+          setCloudStatus('error')
+          setCloudMessage('クラウド保存失敗')
+        } finally {
+          supabasePushInFlightRef.current -= 1
+        }
+      })()
+    }, SUPABASE_SAVE_DEBOUNCE_MS)
+  }, [memos, supabaseConfigured])
+
+  useEffect(() => {
+    firedRemindersRef.current = firedReminders
+    saveFiredReminders(firedReminders)
+
+    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+
+    lastLocalSupabaseChangeAtRef.current = Date.now()
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+
+    if (supabaseSaveTimersRef.current.settings) {
+      window.clearTimeout(supabaseSaveTimersRef.current.settings)
+    }
+
+    const snapshot = plannerSettingsPayload({
+      firedReminders,
+      notificationPermission: notificationPermissionRef.current
+    })
+    supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
+      void (async () => {
+        supabasePushInFlightRef.current += 1
+        try {
+          const timestamp = new Date().toISOString()
+          const rows = settingsToSupabaseRows(snapshot, supabaseRowsRef.current.settings, timestamp)
+          supabaseRowsRef.current.settings = await syncSupabaseRows(
+            'settings',
+            rows,
+            supabaseRowsRef.current.settings
+          )
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+        } catch (error) {
+          console.error('Supabase settings sync failed', error)
+          setCloudStatus('error')
+          setCloudMessage('クラウド保存失敗')
+        } finally {
+          supabasePushInFlightRef.current -= 1
+        }
+      })()
+    }, SUPABASE_SAVE_DEBOUNCE_MS)
+  }, [firedReminders, supabaseConfigured])
+
+  useEffect(() => {
+    notificationPermissionRef.current = notificationPermission
+  }, [notificationPermission])
+
+  useEffect(() => {
+    googleConnectedRef.current = googleConnected
+    saveGoogleConnected(googleConnected)
+  }, [googleConnected])
+
+  useEffect(() => {
+    if (!supabaseConfigured) {
+      supabaseReadyRef.current = false
+      return undefined
+    }
+
+    let cancelled = false
+
+    async function hydrateFromSupabase() {
+      try {
+        setCloudStatus('loading')
+        setCloudMessage('クラウド読込中')
+        const remoteData = await loadPlannerDataFromSupabase()
+        if (cancelled) return
+
+        const timestamp = new Date().toISOString()
+        const remoteRows = supabaseRowsFromPlannerData(remoteData, supabaseRowsRef.current, timestamp)
+        supabaseRowsRef.current = {
+          events: rowsById(remoteRows.events),
+          tasks: rowsById(remoteRows.tasks),
+          memos: rowsById(remoteRows.memos),
+          settings: rowsById(remoteRows.settings)
+        }
+
+        if (plannerDataHasContent(remoteData)) {
+          const remoteFiredReminders = isPlainObject(remoteData.settings?.firedReminders)
+            ? remoteData.settings.firedReminders
+            : firedRemindersRef.current
+
+          applyingSupabaseSnapshotRef.current = true
+          supabaseReadyRef.current = false
+          eventsRef.current = remoteData.events
+          tasksRef.current = remoteData.tasks
+          memosRef.current = remoteData.memos
+          firedRemindersRef.current = remoteFiredReminders
+          setEvents(remoteData.events)
+          setTasks(remoteData.tasks)
+          setMemos(remoteData.memos)
+          setFiredReminders(remoteFiredReminders)
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド読込済み ${formatClock(new Date())}`)
+
+          window.setTimeout(() => {
+            applyingSupabaseSnapshotRef.current = false
+            supabaseReadyRef.current = true
+          }, 0)
+          return
+        }
+
+        const initialLocalData = {
+          ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
+          settings: plannerSettingsPayload({
+            firedReminders: firedRemindersRef.current,
+            notificationPermission: notificationPermissionRef.current
+          })
+        }
+        if (plannerDataHasContent(initialLocalData)) {
+          setCloudStatus('saving')
+          setCloudMessage('クラウド初回保存中')
+          const localRows = supabaseRowsFromPlannerData(initialLocalData, supabaseRowsRef.current, timestamp)
+          supabaseRowsRef.current = {
+            events: await syncSupabaseRows('events', localRows.events, supabaseRowsRef.current.events),
+            tasks: await syncSupabaseRows('tasks', localRows.tasks, supabaseRowsRef.current.tasks),
+            memos: await syncSupabaseRows('memos', localRows.memos, supabaseRowsRef.current.memos),
+            settings: await syncSupabaseRows('settings', localRows.settings, supabaseRowsRef.current.settings)
+          }
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド初回保存済み ${formatClock(new Date())}`)
+        } else {
+          const settingsRows = settingsToSupabaseRows(initialLocalData.settings, supabaseRowsRef.current.settings, timestamp)
+          supabaseRowsRef.current.settings = await syncSupabaseRows(
+            'settings',
+            settingsRows,
+            supabaseRowsRef.current.settings
+          )
+          setCloudStatus('connected')
+          setCloudMessage('クラウド保存準備OK')
+        }
+
+        supabaseReadyRef.current = true
+      } catch (error) {
+        applyingSupabaseSnapshotRef.current = false
+        supabaseReadyRef.current = false
+        console.error('Supabase sync failed', error)
+        setCloudStatus('error')
+        setCloudMessage('クラウド読込失敗')
+      }
+    }
+
+    void hydrateFromSupabase()
+
+    return () => {
+      cancelled = true
+    }
+  }, [supabaseConfigured])
+
+  useEffect(() => {
+    if (!supabaseConfigured) return undefined
+
+    async function refreshFromSupabase() {
+      if (!supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+      if (supabasePushInFlightRef.current > 0) return
+      if (Date.now() - lastLocalSupabaseChangeAtRef.current < SUPABASE_SAVE_DEBOUNCE_MS + 1000) return
+
+      try {
+        const remoteData = await loadPlannerDataFromSupabase()
+        const timestamp = new Date().toISOString()
+        const remoteRows = supabaseRowsFromPlannerData(remoteData, supabaseRowsRef.current, timestamp)
+        const currentData = {
+          events: eventsRef.current,
+          tasks: tasksRef.current,
+          memos: memosRef.current,
+          settings: plannerSettingsPayload({
+            firedReminders: firedRemindersRef.current,
+            notificationPermission: notificationPermissionRef.current
+          })
+        }
+
+        supabaseRowsRef.current = {
+          events: rowsById(remoteRows.events),
+          tasks: rowsById(remoteRows.tasks),
+          memos: rowsById(remoteRows.memos),
+          settings: rowsById(remoteRows.settings)
+        }
+
+        if (plannerDataEquals(remoteData, currentData)) return
+
+        const remoteFiredReminders = isPlainObject(remoteData.settings?.firedReminders)
+          ? remoteData.settings.firedReminders
+          : firedRemindersRef.current
+
+        applyingSupabaseSnapshotRef.current = true
+        supabaseReadyRef.current = false
+        eventsRef.current = remoteData.events
+        tasksRef.current = remoteData.tasks
+        memosRef.current = remoteData.memos
+        firedRemindersRef.current = remoteFiredReminders
+        setEvents(remoteData.events)
+        setTasks(remoteData.tasks)
+        setMemos(remoteData.memos)
+        setFiredReminders(remoteFiredReminders)
+        setCloudStatus('connected')
+        setCloudMessage(`クラウド更新 ${formatClock(new Date())}`)
+
+        window.setTimeout(() => {
+          applyingSupabaseSnapshotRef.current = false
+          supabaseReadyRef.current = true
+        }, 0)
+      } catch (error) {
+        console.error('Supabase refresh failed', error)
+        setCloudStatus('error')
+        setCloudMessage('クラウド読込失敗')
+      }
+    }
+
+    const intervalId = window.setInterval(refreshFromSupabase, SUPABASE_PULL_INTERVAL_MS)
+    const refreshOnFocus = () => {
+      void refreshFromSupabase()
+    }
+    const refreshOnVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void refreshFromSupabase()
+      }
+    }
+
+    window.addEventListener('focus', refreshOnFocus)
+    document.addEventListener('visibilitychange', refreshOnVisible)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', refreshOnFocus)
+      document.removeEventListener('visibilitychange', refreshOnVisible)
+    }
+  }, [supabaseConfigured])
+
+  useEffect(() => () => {
+    Object.values(supabaseSaveTimersRef.current).forEach(timerId => {
+      if (timerId) window.clearTimeout(timerId)
+    })
+  }, [])
+
   useEffect(() => {
     if (!isEventModalOpen) return undefined
 
@@ -1192,12 +1952,15 @@ export default function App() {
   const mobileMemoKey = dashboardMemoStorageKey(selectedMobileDate)
   const mobileMemoText = memos[mobileMemoKey] || ''
   const mobileDragRange = mobileDragSelection
-    ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
+    ? {
+        startMinutes: Math.min(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes),
+        endMinutes: Math.max(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
+      }
     : null
   const mobileDragPreviewStyle = mobileDragSelection
     ? {
         top: Math.min(mobileDragSelection.anchorY, mobileDragSelection.currentY) + 'px',
-        height: Math.max(24, Math.abs(mobileDragSelection.currentY - mobileDragSelection.anchorY)) + 'px'
+        height: Math.max(2, Math.abs(mobileDragSelection.currentY - mobileDragSelection.anchorY)) + 'px'
       }
     : null
   const draggedTask = useMemo(() => (
@@ -2705,6 +3468,10 @@ export default function App() {
           </div>
         </div>
         <div className="header-actions">
+          <div className={`cloud-sync ${cloudStatus}`} title={cloudMessage}>
+            <span className="cloud-dot" aria-hidden="true" />
+            <span className="cloud-text">{cloudMessage}</span>
+          </div>
           <div className={`google-sync ${googleStatus}`}>
             <span className="google-dot" aria-hidden="true" />
             <span className="google-text">{googleMessage}</span>
@@ -2831,12 +3598,16 @@ export default function App() {
               onContextMenu={e => {
                 e.preventDefault()
               }}
-            >
-              {mobileDragSelection && mobileDragRange && (
-                <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
-                  <span>{minutesToTime(mobileDragRange.startMinutes)}〜{minutesToTime(mobileDragRange.endMinutes)}</span>
-                </div>
-              )}
+	            >
+	              {mobileDragSelection && mobileDragRange && (
+	                <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
+	                  <span>
+	                    {mobileDragRange.startMinutes === mobileDragRange.endMinutes
+	                      ? minutesToTime(mobileDragRange.startMinutes)
+	                      : `${minutesToTime(mobileDragRange.startMinutes)}〜${minutesToTime(mobileDragRange.endMinutes)}`}
+	                  </span>
+	                </div>
+	              )}
               {HOURS.map(hour => {
                 const hourStart = hour * 60
                 const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
