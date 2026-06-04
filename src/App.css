@@ -2262,20 +2262,28 @@
   align-items: center;
   justify-content: center;
   background: rgba(15, 23, 42, 0.36);
-  padding: 18px;
+  box-sizing: border-box;
+  overflow-x: hidden;
+  padding: 12px;
 }
 .mobile-event-modal {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  width: min(100%, 380px);
-  max-height: calc(100svh - 36px);
+  width: calc(100vw - 24px);
+  max-width: 420px;
+  max-height: calc(100svh - 24px);
+  overflow-x: hidden;
   overflow-y: auto;
   border-radius: 18px;
   background: #fff;
   box-shadow: 0 22px 52px rgba(15, 23, 42, 0.24);
   box-sizing: border-box;
   padding: 18px;
+}
+.mobile-event-modal * {
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .mobile-event-modal h3 {
   margin: 0 0 2px;
@@ -2288,6 +2296,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
   color: #334155;
   font-size: 12px;
   font-weight: 800;
@@ -2295,6 +2304,7 @@
 .mobile-event-modal-field input,
 .mobile-event-modal-field select {
   width: 100%;
+  min-width: 0;
   min-height: 44px;
   border: 1px solid rgba(15, 23, 42, 0.13);
   border-radius: 12px;
@@ -2309,6 +2319,7 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+  min-width: 0;
 }
 .mobile-event-modal-reminders {
   margin: 2px 0 0;
@@ -2653,18 +2664,6 @@
   border-top: 1px solid rgba(15, 23, 42, 0.08);
   padding: 12px 2px 78px 0;
 }
-.mobile-month-detail h3 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 800;
-  line-height: 1.3;
-}
-.mobile-month-detail-title {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 800;
-}
 .mobile-month-event-list {
   display: flex;
   flex-direction: column;
@@ -2889,6 +2888,7 @@
   body,
   #root {
     min-height: 100%;
+    overflow-x: hidden;
     overflow-y: auto;
   }
   .app-root {
@@ -2915,6 +2915,12 @@
     overflow-y: visible;
     padding-bottom: 88px;
     width: 100%;
+  }
+  .mobile-top-card {
+    position: sticky;
+    top: 10px;
+    z-index: 60;
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
   }
   .mobile-view.mobile-page-month {
     height: calc(100svh - 20px);

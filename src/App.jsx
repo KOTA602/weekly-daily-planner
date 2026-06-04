@@ -1522,11 +1522,6 @@ export default function App() {
     endTime: '10:00'
   })
   const [mobileActivePage, setMobileActivePage] = useState('events')
-  const [mobileEventDraft, setMobileEventDraft] = useState({
-    title: '',
-    startTime: '09:00',
-    endTime: '10:00'
-  })
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
@@ -2036,9 +2031,6 @@ export default function App() {
   const monthEventEndOptions = useMemo(() => (
     TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(monthEventDraft.startTime))
   ), [monthEventDraft.startTime])
-  const mobileEventEndOptions = useMemo(() => (
-    TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(mobileEventDraft.startTime))
-  ), [mobileEventDraft.startTime])
   const draftEventEndOptions = useMemo(() => (
     TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(draftEventStart))
   ), [draftEventStart])
@@ -3091,18 +3083,6 @@ export default function App() {
     })
   }
 
-  function updateMobileEventStart(startTime) {
-    setMobileEventDraft(prev => {
-      const startMinutes = minutesFromTime(startTime)
-      const endMinutes = minutesFromTime(prev.endTime)
-      const nextEndTime = endMinutes > startMinutes
-        ? prev.endTime
-        : minutesToTime(Math.min(startMinutes + STEP_MINUTES, GRID_END_MINUTES))
-
-      return { ...prev, startTime, endTime: nextEndTime }
-    })
-  }
-
   function addDashboardEvent(e) {
     e.preventDefault()
     const title = dashboardEventDraft.title.trim()
@@ -3140,24 +3120,6 @@ export default function App() {
       ...normalizedTimes
     })
     setMonthEventDraft(prev => ({ ...prev, title: '' }))
-  }
-
-  function addMobileEvent(e) {
-    e.preventDefault()
-    const title = mobileEventDraft.title.trim()
-    if (!title) return
-
-    const normalizedTimes = normalizeEventTimeRange(
-      mobileEventDraft.startTime,
-      mobileEventDraft.endTime
-    )
-
-    saveMobileEvent({
-      date: selectedMobileDate,
-      title,
-      ...normalizedTimes
-    })
-    setMobileEventDraft(prev => ({ ...prev, title: '' }))
   }
 
   function addDashboardTask(e) {
@@ -3717,39 +3679,6 @@ export default function App() {
 
         {mobileActivePage === 'events' && (
           <section className="mobile-section mobile-schedule-page">
-            <div className="mobile-section-heading">
-              <h2>予定</h2>
-              <span>5:00〜24:00</span>
-            </div>
-            <form className="mobile-add-form mobile-event-form" onSubmit={addMobileEvent}>
-              <input
-                type="text"
-                placeholder="予定タイトル"
-                value={mobileEventDraft.title}
-                onChange={e => setMobileEventDraft(prev => ({ ...prev, title: e.target.value }))}
-              />
-              <div className="mobile-time-row">
-                <select
-                  value={mobileEventDraft.startTime}
-                  onChange={e => updateMobileEventStart(e.target.value)}
-                >
-                  {START_TIME_OPTIONS.map(slot => (
-                    <option key={slot} value={slot}>{slot}</option>
-                  ))}
-                </select>
-                <span>〜</span>
-                <select
-                  value={mobileEventDraft.endTime}
-                  onChange={e => setMobileEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
-                >
-                  {mobileEventEndOptions.map(slot => (
-                    <option key={slot} value={slot}>{slot}</option>
-                  ))}
-                </select>
-                <button type="submit">追加</button>
-              </div>
-            </form>
-
             <div
               className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
               style={{
@@ -3900,8 +3829,6 @@ export default function App() {
               </div>
             </div>
             <div className="mobile-month-detail">
-              <h3>{selectedMonthDateLabel}</h3>
-              <div className="mobile-month-detail-title">予定</div>
               {selectedMonthEvents.length === 0 ? (
                 <p className="mobile-empty">この日の予定はありません</p>
               ) : (
