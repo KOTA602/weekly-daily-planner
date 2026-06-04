@@ -117,7 +117,7 @@ const EVENT_REMINDER_CHOICES = [
 const REMINDER_GRACE_MS = 90 * 1000
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
 const MOBILE_LONG_PRESS_MS = 420
-const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 10
+const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 18
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -2448,7 +2448,11 @@ export default function App() {
         currentY: startState.anchorY
       }
 
-      startState.timeline.setPointerCapture?.(startState.pointerId)
+      try {
+        startState.timeline.setPointerCapture?.(startState.pointerId)
+      } catch {
+        // Some mobile browsers release the pointer before capture is available.
+      }
       mobileDragSelectionRef.current = nextSelection
       setMobileDragSelection(nextSelection)
       mobileLongPressTimerRef.current = null
@@ -2500,6 +2504,15 @@ export default function App() {
       endTime: minutesToTime(range.endMinutes)
     })
     setMobilePendingTitle('')
+    resetMobileDragCreate()
+  }
+
+  function cancelMobileLongPressCreate(e) {
+    if (mobileDragSelectionRef.current) {
+      finishMobileLongPressCreate(e)
+      return
+    }
+
     resetMobileDragCreate()
   }
 
@@ -2759,7 +2772,7 @@ export default function App() {
               onPointerDown={startMobileLongPressCreate}
               onPointerMove={moveMobileLongPressCreate}
               onPointerUp={finishMobileLongPressCreate}
-              onPointerCancel={resetMobileDragCreate}
+              onPointerCancel={cancelMobileLongPressCreate}
               onSelect={e => e.preventDefault()}
               onDragStart={e => e.preventDefault()}
               onContextMenu={e => {
