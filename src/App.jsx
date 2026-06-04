@@ -116,8 +116,8 @@ const EVENT_REMINDER_CHOICES = [
 ]
 const REMINDER_GRACE_MS = 90 * 1000
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
-const MOBILE_LONG_PRESS_MS = 380
-const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 12
+const MOBILE_LONG_PRESS_MS = 420
+const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 10
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -142,6 +142,29 @@ function minutesFromPointer(e, element) {
   return clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
 }
 
+function mobileTimelineYForMinutes(minutes, timeline) {
+  const timelineRect = timeline.getBoundingClientRect()
+  const rows = Array.from(timeline.querySelectorAll('.mobile-hour-row'))
+  if (rows.length === 0) return 0
+
+  const clampedMinutes = clamp(minutes, GRID_START_MINUTES, GRID_END_MINUTES)
+  if (clampedMinutes >= GRID_END_MINUTES) {
+    const endRow = rows.find(row => Number(row.dataset.hour) === 24)
+    if (!endRow) return timelineRect.height
+
+    const endRect = endRow.getBoundingClientRect()
+    return clamp(endRect.top - timelineRect.top, 0, timelineRect.height)
+  }
+
+  const hour = Math.floor(clampedMinutes / 60)
+  const row = rows.find(item => Number(item.dataset.hour) === hour)
+  if (!row) return 0
+
+  const rowRect = row.getBoundingClientRect()
+  const ratio = (clampedMinutes - hour * 60) / 60
+  return clamp(rowRect.top - timelineRect.top + rowRect.height * ratio, 0, timelineRect.height)
+}
+
 function mobilePointerPosition(e, timeline) {
   const timelineRect = timeline.getBoundingClientRect()
   const rows = Array.from(timeline.querySelectorAll('.mobile-hour-row'))
@@ -161,11 +184,13 @@ function mobilePointerPosition(e, timeline) {
   const rowRect = activeRow.getBoundingClientRect()
   const hour = Number(activeRow.dataset.hour || GRID_START_MINUTES / 60)
   const ratio = clamp((e.clientY - rowRect.top) / Math.max(rowRect.height, 1), 0, 1)
-  const y = clamp(e.clientY - timelineRect.top, 0, timelineRect.height)
+  const minutes = hour >= 24
+    ? GRID_END_MINUTES
+    : clampGridMinutes(hour * 60 + ratio * 60)
 
   return {
-    minutes: clampGridMinutes(hour * 60 + ratio * 60),
-    y
+    minutes,
+    y: mobileTimelineYForMinutes(minutes, timeline)
   }
 }
 
@@ -1083,6 +1108,7 @@ export default function App() {
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
   const [mobilePendingEvent, setMobilePendingEvent] = useState(null)
   const [mobilePendingTitle, setMobilePendingTitle] = useState('')
+  const [mobileMonthEventFormOpen, setMobileMonthEventFormOpen] = useState(false)
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
@@ -1496,6 +1522,23 @@ export default function App() {
       }
     }
     setEditing(null)
+  }
+
+  function saveMobileEvent(ev) {
+    const normalizedEvent = {
+      ...ev,
+      ...normalizeEventTimeRange(ev.startTime, ev.endTime)
+    }
+    const id = createLocalId('event')
+    const localEvent = { ...normalizedEvent, id }
+    const accessToken = currentGoogleAccessToken()
+
+    saveUndoSnapshot()
+    setEvents(prev => [...prev, localEvent])
+
+    if (accessToken && isGoogleSyncConnected()) {
+      void addEventToGoogleCalendar(localEvent)
+    }
   }
 
   function deleteEvent(id) {
@@ -2266,6 +2309,25 @@ export default function App() {
     setMonthEventDraft(prev => ({ ...prev, title: '' }))
   }
 
+  function addMobileMonthEvent(e) {
+    e.preventDefault()
+    const title = monthEventDraft.title.trim()
+    if (!title) return
+
+    const normalizedTimes = normalizeEventTimeRange(
+      monthEventDraft.startTime,
+      monthEventDraft.endTime
+    )
+
+    saveMobileEvent({
+      date: selectedMonthDate,
+      title,
+      ...normalizedTimes
+    })
+    setMonthEventDraft(prev => ({ ...prev, title: '' }))
+    setMobileMonthEventFormOpen(false)
+  }
+
   function addMobileEvent(e) {
     e.preventDefault()
     const title = mobileEventDraft.title.trim()
@@ -2276,8 +2338,7 @@ export default function App() {
       mobileEventDraft.endTime
     )
 
-    saveEvent({
-      id: null,
+    saveMobileEvent({
       date: selectedMobileDate,
       title,
       ...normalizedTimes
@@ -2337,7 +2398,18 @@ export default function App() {
     mobileLongPressTimerRef.current = null
   }
 
+  function releaseMobilePointerCapture(startState) {
+    if (!startState?.timeline?.hasPointerCapture?.(startState.pointerId)) return
+
+    try {
+      startState.timeline.releasePointerCapture(startState.pointerId)
+    } catch {
+      // Pointer capture may already be released by the browser after cancellation.
+    }
+  }
+
   function resetMobileDragCreate() {
+    releaseMobilePointerCapture(mobileDragStartRef.current)
     clearMobileLongPressTimer()
     mobileDragStartRef.current = null
     mobileDragSelectionRef.current = null
@@ -2345,9 +2417,11 @@ export default function App() {
   }
 
   function startMobileLongPressCreate(e) {
+    if (e.isPrimary === false) return
     if (e.pointerType === 'mouse' && e.button !== 0) return
     if (e.target.closest('.mobile-event-card, input, select, button, textarea')) return
 
+    e.stopPropagation()
     const timeline = e.currentTarget
     const position = mobilePointerPosition(e, timeline)
     const startState = {
@@ -2380,8 +2454,10 @@ export default function App() {
   }
 
   function moveMobileLongPressCreate(e) {
+    if (e.isPrimary === false) return
     const startState = mobileDragStartRef.current
     if (!startState) return
+    if (e.pointerId !== startState.pointerId) return
 
     const distance = Math.hypot(e.clientX - startState.originX, e.clientY - startState.originY)
     if (!mobileDragSelectionRef.current && distance > MOBILE_LONG_PRESS_MOVE_TOLERANCE) {
@@ -2404,8 +2480,10 @@ export default function App() {
   }
 
   function finishMobileLongPressCreate(e) {
+    if (e.isPrimary === false) return
     const selection = mobileDragSelectionRef.current
     const startState = mobileDragStartRef.current
+    if (startState && e.pointerId !== startState.pointerId) return
 
     if (!selection) {
       resetMobileDragCreate()
@@ -2420,9 +2498,6 @@ export default function App() {
       endTime: minutesToTime(range.endMinutes)
     })
     setMobilePendingTitle('')
-    if (startState?.timeline.hasPointerCapture?.(startState.pointerId)) {
-      startState.timeline.releasePointerCapture(startState.pointerId)
-    }
     resetMobileDragCreate()
   }
 
@@ -2431,8 +2506,7 @@ export default function App() {
     const title = mobilePendingTitle.trim()
     if (!title || !mobilePendingEvent) return
 
-    saveEvent({
-      id: null,
+    saveMobileEvent({
       ...mobilePendingEvent,
       title
     })
@@ -2684,6 +2758,9 @@ export default function App() {
               onPointerMove={moveMobileLongPressCreate}
               onPointerUp={finishMobileLongPressCreate}
               onPointerCancel={resetMobileDragCreate}
+              onContextMenu={e => {
+                if (mobileDragSelectionRef.current) e.preventDefault()
+              }}
             >
               {mobileDragSelection && mobileDragRange && (
                 <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
@@ -2700,7 +2777,7 @@ export default function App() {
 
                 return (
                   <div key={hour} className="mobile-hour-row" data-hour={hour}>
-                    {hour === currentHour && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
+                    {selectedMobileDate === currentDateISO && hour === currentHour && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
                       <div
                         className="mobile-current-time-line"
                         style={{ top: `${((currentMinutes - hourStart) / 60) * 100}%` }}
@@ -2821,6 +2898,48 @@ export default function App() {
                 </ul>
               )}
             </div>
+            <button
+              type="button"
+              className="mobile-month-add-button"
+              onClick={() => setMobileMonthEventFormOpen(true)}
+              aria-label="選択日に予定を追加"
+            >
+              +
+            </button>
+            {mobileMonthEventFormOpen && (
+              <form className="mobile-month-add-panel" onSubmit={addMobileMonthEvent}>
+                <div className="mobile-month-add-head">
+                  <strong>{selectedMonthDateShortLabel}に予定追加</strong>
+                  <button type="button" onClick={() => setMobileMonthEventFormOpen(false)}>×</button>
+                </div>
+                <input
+                  type="text"
+                  placeholder="予定タイトル"
+                  value={monthEventDraft.title}
+                  onChange={e => setMonthEventDraft(prev => ({ ...prev, title: e.target.value }))}
+                />
+                <div className="mobile-time-row">
+                  <select
+                    value={monthEventDraft.startTime}
+                    onChange={e => updateMonthEventStart(e.target.value)}
+                  >
+                    {START_TIME_OPTIONS.map(slot => (
+                      <option key={slot} value={slot}>{slot}</option>
+                    ))}
+                  </select>
+                  <span>〜</span>
+                  <select
+                    value={monthEventDraft.endTime}
+                    onChange={e => setMonthEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
+                  >
+                    {monthEventEndOptions.map(slot => (
+                      <option key={slot} value={slot}>{slot}</option>
+                    ))}
+                  </select>
+                  <button type="submit">追加</button>
+                </div>
+              </form>
+            )}
           </section>
         )}
 
@@ -2828,12 +2947,12 @@ export default function App() {
           <section className="mobile-section mobile-memo-page">
             <div className="mobile-section-heading">
               <h2>メモ</h2>
-              <span>今日のメモ</span>
+              <span>{selectedMobileDateLabel}</span>
             </div>
             <textarea
               value={mobileMemoText}
               onChange={e => updateMobileMemo(e.target.value)}
-              placeholder="今日のメモを書く..."
+              placeholder="この日のメモを書く..."
             />
           </section>
         )}

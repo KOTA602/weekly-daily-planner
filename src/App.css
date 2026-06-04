@@ -2323,6 +2323,9 @@
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
 }
+.mobile-month-page {
+  position: relative;
+}
 .mobile-month-weekdays span {
   color: #64748b;
   font-size: 11px;
@@ -2480,6 +2483,86 @@
 .mobile-month-detail-event.current-event .mobile-month-detail-time,
 .mobile-month-detail-event.current-event .mobile-month-detail-name {
   color: #9a3412;
+}
+.mobile-month-add-button {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 40;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  border: none;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.32);
+  color: #fff;
+  cursor: pointer;
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1;
+}
+.mobile-month-add-panel {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: 86px;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.18);
+  padding: 12px;
+}
+.mobile-month-add-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mobile-month-add-head strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 800;
+}
+.mobile-month-add-head button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 800;
+}
+.mobile-month-add-panel input,
+.mobile-month-add-panel select {
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  box-sizing: border-box;
+  color: #1f2937;
+  font-size: 14px;
+  padding: 8px 10px;
+}
+.mobile-month-add-panel .mobile-time-row button {
+  min-height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 12px;
 }
 @media (max-width: 1180px) {
   .app-header {
