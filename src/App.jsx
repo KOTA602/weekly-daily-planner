@@ -2452,6 +2452,13 @@ export default function App() {
             >
               メモ
             </button>
+            <button
+              type="button"
+              className={mobileActivePage === 'month' ? 'active' : ''}
+              onClick={() => setMobileActivePage('month')}
+            >
+              月表示
+            </button>
           </nav>
         </section>
 
@@ -2501,7 +2508,14 @@ export default function App() {
 
                 return (
                   <div key={hour} className="mobile-hour-row">
-                    <div className={`mobile-hour-label ${hour === currentHour ? 'current-hour' : ''}`}>
+                    {hour === currentHour && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
+                      <div
+                        className="mobile-current-time-line"
+                        style={{ top: `${((currentMinutes - hourStart) / 60) * 100}%` }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    <div className="mobile-hour-label">
                       {hour === 24 ? '24:00' : `${String(hour).padStart(2, '0')}:00`}
                     </div>
                     <div className="mobile-hour-events">
@@ -2572,6 +2586,51 @@ export default function App() {
               onChange={e => updateMobileMemo(e.target.value)}
               placeholder="今日のメモを書く..."
             />
+          </section>
+        )}
+
+        {mobileActivePage === 'month' && (
+          <section className="mobile-section mobile-month-page">
+            <div className="mobile-section-heading">
+              <h2>月表示</h2>
+              <span>{monthViewTitle}</span>
+            </div>
+            <div className="mobile-month-weekdays" aria-hidden="true">
+              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+                <span key={day}>{day}</span>
+              ))}
+            </div>
+            <div className="mobile-month-grid">
+              {monthCalendarCells.map((dateISO, index) => {
+                if (!dateISO) {
+                  return <div className="mobile-month-day empty" key={`mobile-month-empty-${index}`} aria-hidden="true" />
+                }
+
+                const date = dateFromISO(dateISO)
+                const weekendClass = dayHeaderTone(date)
+                const isToday = dateISO === currentDateISO
+                const isSelected = dateISO === selectedMonthDate
+                const dayEvents = eventsFor(dateISO)
+
+                return (
+                  <button
+                    type="button"
+                    key={dateISO}
+                    className={`mobile-month-day ${weekendClass} ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''}`}
+                    onClick={() => selectMonthDate(dateISO)}
+                  >
+                    <span className="mobile-month-date">{date.getDate()}</span>
+                    <span className="mobile-month-events">
+                      {dayEvents.map(event => (
+                        <span className="mobile-month-event-pill" key={event.id}>
+                          {event.title || '無題の予定'}
+                        </span>
+                      ))}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           </section>
         )}
       </main>
