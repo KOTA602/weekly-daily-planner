@@ -1994,7 +1994,7 @@
   background: transparent;
   color: #2563eb;
   cursor: pointer;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 800;
 }
 .mobile-tabs button:last-child {
@@ -2087,10 +2087,15 @@
   font-weight: 700;
 }
 .mobile-timeline {
+  position: relative;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 10px;
   background: #fff;
+  touch-action: pan-y;
+}
+.mobile-timeline.creating {
+  touch-action: none;
 }
 .mobile-hour-row {
   position: relative;
@@ -2137,6 +2142,70 @@
   height: 8px;
   border-radius: 999px;
   background: #ef4444;
+}
+.mobile-drag-selection {
+  position: absolute;
+  left: 0;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-top: 1px solid #1e3a8a;
+  border-bottom: 1px solid #1e3a8a;
+  background: rgba(219, 234, 254, 0.42);
+  color: #1e3a8a;
+  font-size: 12px;
+  font-weight: 800;
+  z-index: 25;
+  pointer-events: none;
+}
+.mobile-pending-event-form {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(37, 99, 235, 0.16);
+  border-radius: 10px;
+  background: #eff6ff;
+  padding: 9px;
+}
+.mobile-pending-event-form > span {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.mobile-pending-event-form input {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  box-sizing: border-box;
+  color: #1f2937;
+  font-size: 14px;
+  padding: 7px 9px;
+}
+.mobile-pending-event-form div {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.mobile-pending-event-form button {
+  min-height: 32px;
+  border: 1px solid rgba(37, 99, 235, 0.22);
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0 12px;
+}
+.mobile-pending-event-form button.ghost {
+  background: #fff;
+  color: #475569;
 }
 .mobile-event-card {
   display: grid;
@@ -2266,8 +2335,10 @@
 .mobile-month-day {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  justify-content: center;
   gap: 3px;
-  min-height: 76px;
+  min-height: 48px;
   min-width: 0;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 8px;
@@ -2277,7 +2348,7 @@
   cursor: pointer;
   overflow: hidden;
   padding: 4px;
-  text-align: left;
+  text-align: center;
 }
 .mobile-month-day.empty {
   background: #f8fafc;
@@ -2317,28 +2388,98 @@
   background: #2563eb;
   color: #fff;
 }
-.mobile-month-events {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 0;
-  overflow: hidden;
+.mobile-month-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #2563eb;
 }
-.mobile-month-event-pill {
-  display: block;
-  min-height: 16px;
-  overflow: hidden;
-  border-left: 2px solid #2563eb;
-  border-radius: 5px;
-  background: rgba(219, 234, 254, 0.86);
-  color: #1e3a8a;
-  font-size: 10px;
+.mobile-month-header {
+  display: grid;
+  grid-template-columns: 34px 1fr 34px;
+  align-items: center;
+  gap: 8px;
+}
+.mobile-month-header strong {
+  color: #0f172a;
+  font-size: 20px;
   font-weight: 800;
-  line-height: 14px;
-  padding: 1px 4px;
+  line-height: 1.2;
+  text-align: center;
+}
+.mobile-month-header button {
+  min-height: 34px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 800;
+}
+.mobile-month-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 4px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding-top: 12px;
+}
+.mobile-month-detail h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1.3;
+}
+.mobile-month-detail-title {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+.mobile-month-event-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.mobile-month-detail-event {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 9px;
+  background: #fff;
+  color: #1e3a8a;
+  padding: 7px 9px;
+}
+.mobile-month-detail-event.current-event {
+  border-color: rgba(251, 146, 60, 0.55);
+  background: rgba(255, 237, 213, 0.86);
+  color: #9a3412;
+}
+.mobile-month-detail-time {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.mobile-month-detail-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.mobile-month-detail-event.current-event .mobile-month-detail-time,
+.mobile-month-detail-event.current-event .mobile-month-detail-name {
+  color: #9a3412;
 }
 @media (max-width: 1180px) {
   .app-header {

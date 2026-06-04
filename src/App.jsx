@@ -116,6 +116,8 @@ const EVENT_REMINDER_CHOICES = [
 ]
 const REMINDER_GRACE_MS = 90 * 1000
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
+const MOBILE_LONG_PRESS_MS = 380
+const MOBILE_LONG_PRESS_MOVE_TOLERANCE = 12
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -138,6 +140,33 @@ function minutesFromPointer(e, element) {
   const y = e.clientY - rect.top + element.scrollTop
   const minutesFromStart = (y / ROW_HEIGHT) * 60
   return clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
+}
+
+function mobilePointerPosition(e, timeline) {
+  const timelineRect = timeline.getBoundingClientRect()
+  const rows = Array.from(timeline.querySelectorAll('.mobile-hour-row'))
+  const fallbackRow = e.clientY < timelineRect.top ? rows[0] : rows[rows.length - 1]
+  const activeRow = rows.find(row => {
+    const rect = row.getBoundingClientRect()
+    return e.clientY >= rect.top && e.clientY <= rect.bottom
+  }) || fallbackRow
+
+  if (!activeRow) {
+    return {
+      minutes: GRID_START_MINUTES,
+      y: 0
+    }
+  }
+
+  const rowRect = activeRow.getBoundingClientRect()
+  const hour = Number(activeRow.dataset.hour || GRID_START_MINUTES / 60)
+  const ratio = clamp((e.clientY - rowRect.top) / Math.max(rowRect.height, 1), 0, 1)
+  const y = clamp(e.clientY - timelineRect.top, 0, timelineRect.height)
+
+  return {
+    minutes: clampGridMinutes(hour * 60 + ratio * 60),
+    y
+  }
 }
 
 function eventRangeFromSelection(anchorMinutes, currentMinutes) {
@@ -985,6 +1014,9 @@ export default function App() {
   const updateGoogleEventRef = useRef(null)
   const syncCurrentWeekWithGoogleRef = useRef(null)
   const isSyncingRef = useRef(false)
+  const mobileLongPressTimerRef = useRef(null)
+  const mobileDragStartRef = useRef(null)
+  const mobileDragSelectionRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1048,12 +1080,20 @@ export default function App() {
     endTime: '10:00'
   })
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
+  const [mobileDragSelection, setMobileDragSelection] = useState(null)
+  const [mobilePendingEvent, setMobilePendingEvent] = useState(null)
+  const [mobilePendingTitle, setMobilePendingTitle] = useState('')
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
   useEffect(() => saveMemos(memos), [memos])
   useEffect(() => saveFiredReminders(firedReminders), [firedReminders])
   useEffect(() => saveGoogleConnected(googleConnected), [googleConnected])
+  useEffect(() => () => {
+    if (mobileLongPressTimerRef.current) {
+      window.clearTimeout(mobileLongPressTimerRef.current)
+    }
+  }, [])
 
   const weekDates = useMemo(() => {
     const base = new Date(centerDate)
@@ -1104,6 +1144,15 @@ export default function App() {
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
   const mobileMemoKey = dashboardMemoStorageKey(selectedMobileDate)
   const mobileMemoText = memos[mobileMemoKey] || ''
+  const mobileDragRange = mobileDragSelection
+    ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
+    : null
+  const mobileDragPreviewStyle = mobileDragSelection
+    ? {
+        top: Math.min(mobileDragSelection.anchorY, mobileDragSelection.currentY) + 'px',
+        height: Math.max(24, Math.abs(mobileDragSelection.currentY - mobileDragSelection.anchorY)) + 'px'
+      }
+    : null
   const draggedTask = useMemo(() => (
     tasks.find(item => item.id === draggedTaskId) || null
   ), [tasks, draggedTaskId])
@@ -1169,9 +1218,7 @@ export default function App() {
     day: 'numeric'
   })
   const selectedMonthEvents = useMemo(() => (
-    events
-      .filter(item => item.date === selectedMonthDate)
-      .map(normalizePlannerEvent)
+    dedupeEventsForDisplay(events.filter(item => item.date === selectedMonthDate))
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   ), [events, selectedMonthDate])
 
@@ -2284,6 +2331,115 @@ export default function App() {
     setMemos(prev => ({ ...prev, [mobileMemoKey]: value }))
   }
 
+  function clearMobileLongPressTimer() {
+    if (!mobileLongPressTimerRef.current) return
+    window.clearTimeout(mobileLongPressTimerRef.current)
+    mobileLongPressTimerRef.current = null
+  }
+
+  function resetMobileDragCreate() {
+    clearMobileLongPressTimer()
+    mobileDragStartRef.current = null
+    mobileDragSelectionRef.current = null
+    setMobileDragSelection(null)
+  }
+
+  function startMobileLongPressCreate(e) {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    if (e.target.closest('.mobile-event-card, input, select, button, textarea')) return
+
+    const timeline = e.currentTarget
+    const position = mobilePointerPosition(e, timeline)
+    const startState = {
+      pointerId: e.pointerId,
+      timeline,
+      originX: e.clientX,
+      originY: e.clientY,
+      anchorMinutes: position.minutes,
+      anchorY: position.y
+    }
+
+    mobileDragStartRef.current = startState
+    mobileDragSelectionRef.current = null
+    setMobileDragSelection(null)
+    clearMobileLongPressTimer()
+
+    mobileLongPressTimerRef.current = window.setTimeout(() => {
+      const nextSelection = {
+        anchorMinutes: startState.anchorMinutes,
+        currentMinutes: startState.anchorMinutes,
+        anchorY: startState.anchorY,
+        currentY: startState.anchorY
+      }
+
+      startState.timeline.setPointerCapture?.(startState.pointerId)
+      mobileDragSelectionRef.current = nextSelection
+      setMobileDragSelection(nextSelection)
+      mobileLongPressTimerRef.current = null
+    }, MOBILE_LONG_PRESS_MS)
+  }
+
+  function moveMobileLongPressCreate(e) {
+    const startState = mobileDragStartRef.current
+    if (!startState) return
+
+    const distance = Math.hypot(e.clientX - startState.originX, e.clientY - startState.originY)
+    if (!mobileDragSelectionRef.current && distance > MOBILE_LONG_PRESS_MOVE_TOLERANCE) {
+      resetMobileDragCreate()
+      return
+    }
+
+    if (!mobileDragSelectionRef.current) return
+
+    e.preventDefault()
+    const position = mobilePointerPosition(e, startState.timeline)
+    const nextSelection = {
+      ...mobileDragSelectionRef.current,
+      currentMinutes: position.minutes,
+      currentY: position.y
+    }
+
+    mobileDragSelectionRef.current = nextSelection
+    setMobileDragSelection(nextSelection)
+  }
+
+  function finishMobileLongPressCreate(e) {
+    const selection = mobileDragSelectionRef.current
+    const startState = mobileDragStartRef.current
+
+    if (!selection) {
+      resetMobileDragCreate()
+      return
+    }
+
+    e.preventDefault()
+    const range = eventRangeFromSelection(selection.anchorMinutes, selection.currentMinutes)
+    setMobilePendingEvent({
+      date: selectedMobileDate,
+      startTime: minutesToTime(range.startMinutes),
+      endTime: minutesToTime(range.endMinutes)
+    })
+    setMobilePendingTitle('')
+    if (startState?.timeline.hasPointerCapture?.(startState.pointerId)) {
+      startState.timeline.releasePointerCapture(startState.pointerId)
+    }
+    resetMobileDragCreate()
+  }
+
+  function saveMobilePendingEvent(e) {
+    e.preventDefault()
+    const title = mobilePendingTitle.trim()
+    if (!title || !mobilePendingEvent) return
+
+    saveEvent({
+      id: null,
+      ...mobilePendingEvent,
+      title
+    })
+    setMobilePendingEvent(null)
+    setMobilePendingTitle('')
+  }
+
   function isEventInProgress(event) {
     if (event.date !== currentDateISO) return false
 
@@ -2447,17 +2603,17 @@ export default function App() {
             </button>
             <button
               type="button"
-              className={mobileActivePage === 'memo' ? 'active' : ''}
-              onClick={() => setMobileActivePage('memo')}
-            >
-              メモ
-            </button>
-            <button
-              type="button"
               className={mobileActivePage === 'month' ? 'active' : ''}
               onClick={() => setMobileActivePage('month')}
             >
               月表示
+            </button>
+            <button
+              type="button"
+              className={mobileActivePage === 'memo' ? 'active' : ''}
+              onClick={() => setMobileActivePage('memo')}
+            >
+              メモ
             </button>
           </nav>
         </section>
@@ -2497,7 +2653,43 @@ export default function App() {
               </div>
             </form>
 
-            <div className="mobile-timeline">
+            {mobilePendingEvent && (
+              <form className="mobile-pending-event-form" onSubmit={saveMobilePendingEvent}>
+                <span>{mobilePendingEvent.startTime}〜{mobilePendingEvent.endTime}</span>
+                <input
+                  type="text"
+                  placeholder="予定タイトル"
+                  value={mobilePendingTitle}
+                  onChange={e => setMobilePendingTitle(e.target.value)}
+                />
+                <div>
+                  <button type="submit">保存</button>
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() => {
+                      setMobilePendingEvent(null)
+                      setMobilePendingTitle('')
+                    }}
+                  >
+                    キャンセル
+                  </button>
+                </div>
+              </form>
+            )}
+
+            <div
+              className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
+              onPointerDown={startMobileLongPressCreate}
+              onPointerMove={moveMobileLongPressCreate}
+              onPointerUp={finishMobileLongPressCreate}
+              onPointerCancel={resetMobileDragCreate}
+            >
+              {mobileDragSelection && mobileDragRange && (
+                <div className="mobile-drag-selection" style={mobileDragPreviewStyle} aria-hidden="true">
+                  <span>{minutesToTime(mobileDragRange.startMinutes)}〜{minutesToTime(mobileDragRange.endMinutes)}</span>
+                </div>
+              )}
               {HOURS.map(hour => {
                 const hourStart = hour * 60
                 const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
@@ -2507,7 +2699,7 @@ export default function App() {
                 })
 
                 return (
-                  <div key={hour} className="mobile-hour-row">
+                  <div key={hour} className="mobile-hour-row" data-hour={hour}>
                     {hour === currentHour && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
                       <div
                         className="mobile-current-time-line"
@@ -2575,25 +2767,12 @@ export default function App() {
           </section>
         )}
 
-        {mobileActivePage === 'memo' && (
-          <section className="mobile-section mobile-memo-page">
-            <div className="mobile-section-heading">
-              <h2>メモ</h2>
-              <span>今日のメモ</span>
-            </div>
-            <textarea
-              value={mobileMemoText}
-              onChange={e => updateMobileMemo(e.target.value)}
-              placeholder="今日のメモを書く..."
-            />
-          </section>
-        )}
-
         {mobileActivePage === 'month' && (
           <section className="mobile-section mobile-month-page">
-            <div className="mobile-section-heading">
-              <h2>月表示</h2>
-              <span>{monthViewTitle}</span>
+            <div className="mobile-month-header">
+              <button type="button" onClick={() => changeMonthView(-1)} aria-label="前月">&lt;</button>
+              <strong>{monthViewTitle}</strong>
+              <button type="button" onClick={() => changeMonthView(1)} aria-label="翌月">&gt;</button>
             </div>
             <div className="mobile-month-weekdays" aria-hidden="true">
               {['日', '月', '火', '水', '木', '金', '土'].map(day => (
@@ -2611,6 +2790,7 @@ export default function App() {
                 const isToday = dateISO === currentDateISO
                 const isSelected = dateISO === selectedMonthDate
                 const dayEvents = eventsFor(dateISO)
+                const hasEvents = dayEvents.length > 0
 
                 return (
                   <button
@@ -2620,17 +2800,41 @@ export default function App() {
                     onClick={() => selectMonthDate(dateISO)}
                   >
                     <span className="mobile-month-date">{date.getDate()}</span>
-                    <span className="mobile-month-events">
-                      {dayEvents.map(event => (
-                        <span className="mobile-month-event-pill" key={event.id}>
-                          {event.title || '無題の予定'}
-                        </span>
-                      ))}
-                    </span>
+                    {hasEvents && <span className="mobile-month-dot" aria-label="予定あり" />}
                   </button>
                 )
               })}
             </div>
+            <div className="mobile-month-detail">
+              <h3>{selectedMonthDateLabel}</h3>
+              <div className="mobile-month-detail-title">予定</div>
+              {selectedMonthEvents.length === 0 ? (
+                <p className="mobile-empty">この日の予定はありません</p>
+              ) : (
+                <ul className="mobile-month-event-list">
+                  {selectedMonthEvents.map(event => (
+                    <li key={event.id} className={`mobile-month-detail-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+                      <span className="mobile-month-detail-time">{event.startTime}〜{event.endTime}</span>
+                      <span className="mobile-month-detail-name">{event.title || '無題の予定'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+        )}
+
+        {mobileActivePage === 'memo' && (
+          <section className="mobile-section mobile-memo-page">
+            <div className="mobile-section-heading">
+              <h2>メモ</h2>
+              <span>今日のメモ</span>
+            </div>
+            <textarea
+              value={mobileMemoText}
+              onChange={e => updateMobileMemo(e.target.value)}
+              placeholder="今日のメモを書く..."
+            />
           </section>
         )}
       </main>
