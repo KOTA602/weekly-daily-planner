@@ -11,7 +11,7 @@ npm run dev
 
 ## Googleカレンダー連携の設定
 
-表示中の週の予定を、Googleカレンダーから読み込めます。権限は読み取り専用です。
+表示中の週の予定をGoogleカレンダーから読み込み、自作プランナーで作った予定をGoogleカレンダーにも追加できます。
 
 1. Google Cloudでプロジェクトを作成します。
 2. Google Calendar APIを有効にします。
@@ -25,3 +25,14 @@ VITE_GOOGLE_API_KEY=your-google-api-key
 ```
 
 `.env.local` を変更したあとは、開発サーバーを再起動してください。
+
+## Supabaseクラウド保存の設定
+
+PC版とスマホ版で同じ予定・タスク・メモ・設定を使うには、Supabaseで `events`、`tasks`、`memos`、`settings` テーブルを作成して、`.env.local` に次の値を追加します。
+
+```bash
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+```
+
+テーブル作成用SQLは [supabase-schema.sql](./supabase-schema.sql) にあります。`.env.local` を変更したあとは、開発サーバーを再起動してください。
