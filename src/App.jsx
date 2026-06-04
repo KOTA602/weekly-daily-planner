@@ -2422,6 +2422,7 @@ export default function App() {
     if (e.target.closest('.mobile-event-card, input, select, button, textarea')) return
 
     e.stopPropagation()
+    window.getSelection?.().removeAllRanges?.()
     const timeline = e.currentTarget
     const position = mobilePointerPosition(e, timeline)
     const startState = {
@@ -2439,6 +2440,7 @@ export default function App() {
     clearMobileLongPressTimer()
 
     mobileLongPressTimerRef.current = window.setTimeout(() => {
+      window.getSelection?.().removeAllRanges?.()
       const nextSelection = {
         anchorMinutes: startState.anchorMinutes,
         currentMinutes: startState.anchorMinutes,
@@ -2758,8 +2760,10 @@ export default function App() {
               onPointerMove={moveMobileLongPressCreate}
               onPointerUp={finishMobileLongPressCreate}
               onPointerCancel={resetMobileDragCreate}
+              onSelect={e => e.preventDefault()}
+              onDragStart={e => e.preventDefault()}
               onContextMenu={e => {
-                if (mobileDragSelectionRef.current) e.preventDefault()
+                e.preventDefault()
               }}
             >
               {mobileDragSelection && mobileDragRange && (

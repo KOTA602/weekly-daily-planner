@@ -2093,6 +2093,15 @@
   border-radius: 10px;
   background: #fff;
   touch-action: pan-y;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+.mobile-timeline * {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .mobile-timeline.creating {
   touch-action: none;
