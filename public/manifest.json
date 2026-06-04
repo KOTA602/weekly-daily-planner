@@ -1,10 +1,11 @@
 {
-  "name": "週間・日別プランナー",
-  "short_name": "プランナー",
+  "name": "週間プランナー",
+  "short_name": "週間プランナー",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#fbf6ee",
-  "theme_color": "#ec4899",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
   "icons": [
     {
       "src": "/app-icon.png",

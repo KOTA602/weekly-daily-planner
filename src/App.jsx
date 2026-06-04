@@ -524,6 +524,34 @@ function eventSyncSignature(event) {
   ].join('|')
 }
 
+function dedupeEventsForDisplay(eventList) {
+  const normalizedEvents = eventList.map(normalizePlannerEvent)
+  const googleSyncedSignatures = new Set(
+    normalizedEvents
+      .filter(event => event.googleEventId)
+      .map(eventSyncSignature)
+  )
+  const seenKeys = new Set()
+
+  return normalizedEvents.filter(event => {
+    const signature = eventSyncSignature(event)
+    const signatureKey = `signature:${signature}`
+
+    if (!event.googleEventId && googleSyncedSignatures.has(signature)) {
+      return false
+    }
+
+    const googleKey = event.googleEventId ? `google:${event.googleEventId}` : ''
+    if ((googleKey && seenKeys.has(googleKey)) || seenKeys.has(signatureKey)) {
+      return false
+    }
+
+    if (googleKey) seenKeys.add(googleKey)
+    seenKeys.add(signatureKey)
+    return true
+  })
+}
+
 function mergeGoogleImportedEvents(localEvents, importedEvents, weekDateSet) {
   const importedByGoogleId = new Map()
   const importedBySignature = new Map()
@@ -1013,6 +1041,13 @@ export default function App() {
     startTime: '09:00',
     endTime: '10:00'
   })
+  const [selectedMobileDate, setSelectedMobileDate] = useState(() => formatISO(new Date()))
+  const [mobileEventDraft, setMobileEventDraft] = useState({
+    title: '',
+    startTime: '09:00',
+    endTime: '10:00'
+  })
+  const [mobileTaskDraft, setMobileTaskDraft] = useState('')
 
   useEffect(() => saveEvents(events), [events])
   useEffect(() => saveTasks(tasks), [tasks])
@@ -1034,6 +1069,7 @@ export default function App() {
   const canNextWeek = centerDate.getTime() < MAX_WEEK.getTime()
   const weekLabel = `${weekDates[0].getFullYear()}年${weekDates[0].getMonth() + 1}月${weekDates[0].getDate()}日〜${weekDates[6].getMonth() + 1}月${weekDates[6].getDate()}日`
   const currentDateISO = formatISO(now)
+  const currentHour = now.getHours()
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
   const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
     year: 'numeric',
@@ -1056,6 +1092,19 @@ export default function App() {
   const selectedDashboardTasks = useMemo(() => (
     sortTasksByOrder(tasks.filter(item => item.date === selectedDashboardDate))
   ), [tasks, selectedDashboardDate])
+  const selectedMobileDateLabel = dateFromISO(selectedMobileDate).toLocaleDateString('ja-JP', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long'
+  })
+  const selectedMobileEvents = useMemo(() => (
+    dedupeEventsForDisplay(events.filter(item => item.date === selectedMobileDate))
+      .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
+  ), [events, selectedMobileDate])
+  const selectedMobileTasks = useMemo(() => (
+    sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
+  ), [tasks, selectedMobileDate])
   const draggedTask = useMemo(() => (
     tasks.find(item => item.id === draggedTaskId) || null
   ), [tasks, draggedTaskId])
@@ -1084,6 +1133,9 @@ export default function App() {
   const monthEventEndOptions = useMemo(() => (
     TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(monthEventDraft.startTime))
   ), [monthEventDraft.startTime])
+  const mobileEventEndOptions = useMemo(() => (
+    TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(mobileEventDraft.startTime))
+  ), [mobileEventDraft.startTime])
   const monthViewTitle = monthViewMonth.toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long'
@@ -1853,9 +1905,7 @@ export default function App() {
   }
 
   function eventsFor(dateISO) {
-    return events
-      .filter(item => item.date === dateISO)
-      .map(normalizePlannerEvent)
+    return dedupeEventsForDisplay(events.filter(item => item.date === dateISO))
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   }
 
@@ -2076,6 +2126,21 @@ export default function App() {
     setDashboardCopyMessage('')
   }
 
+  function setMobileDate(dateISO) {
+    setSelectedMobileDate(dateISO)
+    setCenterDate(startOfWeek(dateFromISO(dateISO)))
+  }
+
+  function changeMobileDate(offset) {
+    const next = dateFromISO(selectedMobileDate)
+    next.setDate(next.getDate() + offset)
+    setMobileDate(formatISO(next))
+  }
+
+  function returnMobileToToday() {
+    setMobileDate(formatISO(new Date()))
+  }
+
   function changeMonthView(offset) {
     const next = new Date(monthViewMonth)
     next.setMonth(next.getMonth() + offset)
@@ -2109,6 +2174,18 @@ export default function App() {
 
   function updateMonthEventStart(startTime) {
     setMonthEventDraft(prev => {
+      const startMinutes = minutesFromTime(startTime)
+      const endMinutes = minutesFromTime(prev.endTime)
+      const nextEndTime = endMinutes > startMinutes
+        ? prev.endTime
+        : minutesToTime(Math.min(startMinutes + STEP_MINUTES, GRID_END_MINUTES))
+
+      return { ...prev, startTime, endTime: nextEndTime }
+    })
+  }
+
+  function updateMobileEventStart(startTime) {
+    setMobileEventDraft(prev => {
       const startMinutes = minutesFromTime(startTime)
       const endMinutes = minutesFromTime(prev.endTime)
       const nextEndTime = endMinutes > startMinutes
@@ -2158,6 +2235,25 @@ export default function App() {
     setMonthEventDraft(prev => ({ ...prev, title: '' }))
   }
 
+  function addMobileEvent(e) {
+    e.preventDefault()
+    const title = mobileEventDraft.title.trim()
+    if (!title) return
+
+    const normalizedTimes = normalizeEventTimeRange(
+      mobileEventDraft.startTime,
+      mobileEventDraft.endTime
+    )
+
+    saveEvent({
+      id: null,
+      date: selectedMobileDate,
+      title,
+      ...normalizedTimes
+    })
+    setMobileEventDraft(prev => ({ ...prev, title: '' }))
+  }
+
   function addDashboardTask(e) {
     e.preventDefault()
     const title = dashboardTaskDraft.trim()
@@ -2176,6 +2272,25 @@ export default function App() {
     ])
     setDashboardTaskDraft('')
     setDashboardCopyMessage('')
+  }
+
+  function addMobileTask(e) {
+    e.preventDefault()
+    const title = mobileTaskDraft.trim()
+    if (!title) return
+
+    saveUndoSnapshot()
+    setTasks(prev => [
+      ...prev,
+      {
+        id: createLocalId('task'),
+        date: selectedMobileDate,
+        title,
+        completed: false,
+        order: nextTaskOrder(prev, selectedMobileDate)
+      }
+    ])
+    setMobileTaskDraft('')
   }
 
   function isEventInProgress(event) {
@@ -2318,6 +2433,150 @@ export default function App() {
         </div>
       </header>
 
+      <main className="mobile-view" aria-label="スマホ用今日表示">
+        <section className="mobile-day-card">
+          <div className="mobile-day-top">
+            <span>スマホ表示</span>
+            <strong>{selectedMobileDateLabel}</strong>
+          </div>
+          <div className="mobile-day-controls" aria-label="日付移動">
+            <button type="button" onClick={() => changeMobileDate(-1)}>前日</button>
+            <button type="button" onClick={returnMobileToToday}>今日</button>
+            <button type="button" onClick={() => changeMobileDate(1)}>翌日</button>
+          </div>
+          <div className="mobile-sync-panel">
+            <span className="mobile-sync-message">{googleMessage}</span>
+            {!googleConnected ? (
+              <button
+                type="button"
+                onClick={connectGoogleCalendar}
+                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
+              >
+                Google連携
+              </button>
+            ) : googleStatus === 'reauth' ? (
+              <button
+                type="button"
+                onClick={reauthenticateGoogleCalendar}
+                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
+              >
+                Google再認証
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={importGoogleWeek}
+                disabled={googleStatus === 'loading' || googleStatus === 'syncing' || googleStatus === 'adding' || isSyncing}
+              >
+                {isSyncing ? '同期中...' : 'Googleと同期'}
+              </button>
+            )}
+          </div>
+        </section>
+
+        <section className="mobile-section">
+          <div className="mobile-section-heading">
+            <h2>予定</h2>
+            <span>5:00〜24:00</span>
+          </div>
+          <form className="mobile-add-form mobile-event-form" onSubmit={addMobileEvent}>
+            <input
+              type="text"
+              placeholder="予定タイトル"
+              value={mobileEventDraft.title}
+              onChange={e => setMobileEventDraft(prev => ({ ...prev, title: e.target.value }))}
+            />
+            <div className="mobile-time-row">
+              <select
+                value={mobileEventDraft.startTime}
+                onChange={e => updateMobileEventStart(e.target.value)}
+              >
+                {START_TIME_OPTIONS.map(slot => (
+                  <option key={slot} value={slot}>{slot}</option>
+                ))}
+              </select>
+              <span>〜</span>
+              <select
+                value={mobileEventDraft.endTime}
+                onChange={e => setMobileEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
+              >
+                {mobileEventEndOptions.map(slot => (
+                  <option key={slot} value={slot}>{slot}</option>
+                ))}
+              </select>
+              <button type="submit">追加</button>
+            </div>
+          </form>
+
+          <div className="mobile-timeline">
+            {HOURS.map(hour => {
+              const hourStart = hour * 60
+              const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
+              const hourEvents = selectedMobileEvents.filter(event => {
+                const startMinutes = minutesFromTime(event.startTime)
+                return startMinutes >= hourStart && startMinutes < hourEnd
+              })
+
+              return (
+                <div key={hour} className="mobile-hour-row">
+                  <div className={`mobile-hour-label ${selectedMobileDate === currentDateISO && hour === currentHour ? 'current-hour' : ''}`}>
+                    {hour === 24 ? '24:00' : `${String(hour).padStart(2, '0')}:00`}
+                  </div>
+                  <div className="mobile-hour-events">
+                    {hourEvents.map(event => (
+                      <button
+                        key={event.id}
+                        type="button"
+                        className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
+                        onClick={() => openEdit(event)}
+                      >
+                        <span className="mobile-event-time">{event.startTime}〜{event.endTime}</span>
+                        <span className="mobile-event-title">{event.title || '無題の予定'}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+
+        <section className="mobile-section mobile-task-section">
+          <div className="mobile-section-heading">
+            <h2>タスク</h2>
+            <span>{selectedMobileTasks.length}件</span>
+          </div>
+          <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
+            <input
+              type="text"
+              placeholder="タスクタイトル"
+              value={mobileTaskDraft}
+              onChange={e => setMobileTaskDraft(e.target.value)}
+            />
+            <button type="submit">追加</button>
+          </form>
+          {selectedMobileTasks.length === 0 ? (
+            <p className="mobile-empty">この日のタスクはありません</p>
+          ) : (
+            <ul className="mobile-task-list">
+              {selectedMobileTasks.map(task => (
+                <li key={task.id} className={`mobile-task-item ${task.completed ? 'completed' : ''}`}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={task.completed}
+                      onChange={() => toggleTask(task.id)}
+                    />
+                    <span>{task.title}</span>
+                  </label>
+                  <button type="button" onClick={() => deleteTask(task.id)}>削除</button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </main>
+
       {currentView === 'planner' ? (
       <main className="planner-grid">
         <aside className="memo-panel">
@@ -2423,7 +2682,12 @@ export default function App() {
                               className="slot"
                               style={{ height: ROW_HEIGHT + 'px' }}
                             >
-                              <span className="slot-hour-label" aria-hidden="true">{hour}</span>
+                              <span
+                                className={`slot-hour-label ${isToday && hour === currentHour ? 'current-hour' : ''}`}
+                                aria-hidden="true"
+                              >
+                                {hour}
+                              </span>
                             </div>
                           ))}
                           {isDragActive && (
