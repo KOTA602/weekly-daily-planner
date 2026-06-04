@@ -1041,7 +1041,7 @@ export default function App() {
     startTime: '09:00',
     endTime: '10:00'
   })
-  const [selectedMobileDate, setSelectedMobileDate] = useState(() => formatISO(new Date()))
+  const [mobileActivePage, setMobileActivePage] = useState('events')
   const [mobileEventDraft, setMobileEventDraft] = useState({
     title: '',
     startTime: '09:00',
@@ -1069,6 +1069,7 @@ export default function App() {
   const canNextWeek = centerDate.getTime() < MAX_WEEK.getTime()
   const weekLabel = `${weekDates[0].getFullYear()}年${weekDates[0].getMonth() + 1}月${weekDates[0].getDate()}日〜${weekDates[6].getMonth() + 1}月${weekDates[6].getDate()}日`
   const currentDateISO = formatISO(now)
+  const selectedMobileDate = currentDateISO
   const currentHour = now.getHours()
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
   const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
@@ -1098,13 +1099,11 @@ export default function App() {
     day: 'numeric',
     weekday: 'long'
   })
-  const selectedMobileEvents = useMemo(() => (
-    dedupeEventsForDisplay(events.filter(item => item.date === selectedMobileDate))
-      .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
-  ), [events, selectedMobileDate])
-  const selectedMobileTasks = useMemo(() => (
-    sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
-  ), [tasks, selectedMobileDate])
+  const selectedMobileEvents = dedupeEventsForDisplay(events.filter(item => item.date === selectedMobileDate))
+    .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
+  const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
+  const mobileMemoKey = dashboardMemoStorageKey(selectedMobileDate)
+  const mobileMemoText = memos[mobileMemoKey] || ''
   const draggedTask = useMemo(() => (
     tasks.find(item => item.id === draggedTaskId) || null
   ), [tasks, draggedTaskId])
@@ -2126,21 +2125,6 @@ export default function App() {
     setDashboardCopyMessage('')
   }
 
-  function setMobileDate(dateISO) {
-    setSelectedMobileDate(dateISO)
-    setCenterDate(startOfWeek(dateFromISO(dateISO)))
-  }
-
-  function changeMobileDate(offset) {
-    const next = dateFromISO(selectedMobileDate)
-    next.setDate(next.getDate() + offset)
-    setMobileDate(formatISO(next))
-  }
-
-  function returnMobileToToday() {
-    setMobileDate(formatISO(new Date()))
-  }
-
   function changeMonthView(offset) {
     const next = new Date(monthViewMonth)
     next.setMonth(next.getMonth() + offset)
@@ -2293,6 +2277,13 @@ export default function App() {
     setMobileTaskDraft('')
   }
 
+  function updateMobileMemo(value) {
+    if ((memos[mobileMemoKey] || '') === value) return
+    saveUndoSnapshot()
+    localStorage.setItem(mobileMemoKey, value)
+    setMemos(prev => ({ ...prev, [mobileMemoKey]: value }))
+  }
+
   function isEventInProgress(event) {
     if (event.date !== currentDateISO) return false
 
@@ -2433,148 +2424,156 @@ export default function App() {
         </div>
       </header>
 
-      <main className="mobile-view" aria-label="スマホ用今日表示">
-        <section className="mobile-day-card">
-          <div className="mobile-day-top">
-            <span>スマホ表示</span>
+      <main className="mobile-view" aria-label="スマホ専用表示">
+        <section className="mobile-top-card">
+          <div className="mobile-date">
+            <span>今日</span>
             <strong>{selectedMobileDateLabel}</strong>
           </div>
-          <div className="mobile-day-controls" aria-label="日付移動">
-            <button type="button" onClick={() => changeMobileDate(-1)}>前日</button>
-            <button type="button" onClick={returnMobileToToday}>今日</button>
-            <button type="button" onClick={() => changeMobileDate(1)}>翌日</button>
-          </div>
-          <div className="mobile-sync-panel">
-            <span className="mobile-sync-message">{googleMessage}</span>
-            {!googleConnected ? (
-              <button
-                type="button"
-                onClick={connectGoogleCalendar}
-                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
-              >
-                Google連携
-              </button>
-            ) : googleStatus === 'reauth' ? (
-              <button
-                type="button"
-                onClick={reauthenticateGoogleCalendar}
-                disabled={!googleConfigured || googleStatus === 'loading' || isSyncing}
-              >
-                Google再認証
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={importGoogleWeek}
-                disabled={googleStatus === 'loading' || googleStatus === 'syncing' || googleStatus === 'adding' || isSyncing}
-              >
-                {isSyncing ? '同期中...' : 'Googleと同期'}
-              </button>
-            )}
-          </div>
+          <nav className="mobile-tabs" aria-label="スマホ表示切り替え">
+            <button
+              type="button"
+              className={mobileActivePage === 'events' ? 'active' : ''}
+              onClick={() => setMobileActivePage('events')}
+            >
+              予定
+            </button>
+            <button
+              type="button"
+              className={mobileActivePage === 'tasks' ? 'active' : ''}
+              onClick={() => setMobileActivePage('tasks')}
+            >
+              タスク
+            </button>
+            <button
+              type="button"
+              className={mobileActivePage === 'memo' ? 'active' : ''}
+              onClick={() => setMobileActivePage('memo')}
+            >
+              メモ
+            </button>
+          </nav>
         </section>
 
-        <section className="mobile-section">
-          <div className="mobile-section-heading">
-            <h2>予定</h2>
-            <span>5:00〜24:00</span>
-          </div>
-          <form className="mobile-add-form mobile-event-form" onSubmit={addMobileEvent}>
-            <input
-              type="text"
-              placeholder="予定タイトル"
-              value={mobileEventDraft.title}
-              onChange={e => setMobileEventDraft(prev => ({ ...prev, title: e.target.value }))}
-            />
-            <div className="mobile-time-row">
-              <select
-                value={mobileEventDraft.startTime}
-                onChange={e => updateMobileEventStart(e.target.value)}
-              >
-                {START_TIME_OPTIONS.map(slot => (
-                  <option key={slot} value={slot}>{slot}</option>
-                ))}
-              </select>
-              <span>〜</span>
-              <select
-                value={mobileEventDraft.endTime}
-                onChange={e => setMobileEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
-              >
-                {mobileEventEndOptions.map(slot => (
-                  <option key={slot} value={slot}>{slot}</option>
-                ))}
-              </select>
-              <button type="submit">追加</button>
+        {mobileActivePage === 'events' && (
+          <section className="mobile-section mobile-schedule-page">
+            <div className="mobile-section-heading">
+              <h2>予定</h2>
+              <span>5:00〜24:00</span>
             </div>
-          </form>
+            <form className="mobile-add-form mobile-event-form" onSubmit={addMobileEvent}>
+              <input
+                type="text"
+                placeholder="予定タイトル"
+                value={mobileEventDraft.title}
+                onChange={e => setMobileEventDraft(prev => ({ ...prev, title: e.target.value }))}
+              />
+              <div className="mobile-time-row">
+                <select
+                  value={mobileEventDraft.startTime}
+                  onChange={e => updateMobileEventStart(e.target.value)}
+                >
+                  {START_TIME_OPTIONS.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+                <span>〜</span>
+                <select
+                  value={mobileEventDraft.endTime}
+                  onChange={e => setMobileEventDraft(prev => ({ ...prev, endTime: e.target.value }))}
+                >
+                  {mobileEventEndOptions.map(slot => (
+                    <option key={slot} value={slot}>{slot}</option>
+                  ))}
+                </select>
+                <button type="submit">追加</button>
+              </div>
+            </form>
 
-          <div className="mobile-timeline">
-            {HOURS.map(hour => {
-              const hourStart = hour * 60
-              const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
-              const hourEvents = selectedMobileEvents.filter(event => {
-                const startMinutes = minutesFromTime(event.startTime)
-                return startMinutes >= hourStart && startMinutes < hourEnd
-              })
+            <div className="mobile-timeline">
+              {HOURS.map(hour => {
+                const hourStart = hour * 60
+                const hourEnd = hour === 24 ? GRID_END_MINUTES + STEP_MINUTES : (hour + 1) * 60
+                const hourEvents = selectedMobileEvents.filter(event => {
+                  const startMinutes = minutesFromTime(event.startTime)
+                  return startMinutes >= hourStart && startMinutes < hourEnd
+                })
 
-              return (
-                <div key={hour} className="mobile-hour-row">
-                  <div className={`mobile-hour-label ${selectedMobileDate === currentDateISO && hour === currentHour ? 'current-hour' : ''}`}>
-                    {hour === 24 ? '24:00' : `${String(hour).padStart(2, '0')}:00`}
+                return (
+                  <div key={hour} className="mobile-hour-row">
+                    <div className={`mobile-hour-label ${hour === currentHour ? 'current-hour' : ''}`}>
+                      {hour === 24 ? '24:00' : `${String(hour).padStart(2, '0')}:00`}
+                    </div>
+                    <div className="mobile-hour-events">
+                      {hourEvents.map(event => (
+                        <button
+                          key={event.id}
+                          type="button"
+                          className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
+                          onClick={() => openEdit(event)}
+                        >
+                          <span className="mobile-event-time">{event.startTime}〜{event.endTime}</span>
+                          <span className="mobile-event-title">{event.title || '無題の予定'}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="mobile-hour-events">
-                    {hourEvents.map(event => (
-                      <button
-                        key={event.id}
-                        type="button"
-                        className={`mobile-event-card ${isEventInProgress(event) ? 'current-event' : ''}`}
-                        onClick={() => openEdit(event)}
-                      >
-                        <span className="mobile-event-time">{event.startTime}〜{event.endTime}</span>
-                        <span className="mobile-event-title">{event.title || '無題の予定'}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </section>
+                )
+              })}
+            </div>
+          </section>
+        )}
 
-        <section className="mobile-section mobile-task-section">
-          <div className="mobile-section-heading">
-            <h2>タスク</h2>
-            <span>{selectedMobileTasks.length}件</span>
-          </div>
-          <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
-            <input
-              type="text"
-              placeholder="タスクタイトル"
-              value={mobileTaskDraft}
-              onChange={e => setMobileTaskDraft(e.target.value)}
+        {mobileActivePage === 'tasks' && (
+          <section className="mobile-section mobile-task-section">
+            <div className="mobile-section-heading">
+              <h2>タスク</h2>
+              <span>{selectedMobileTasks.length}件</span>
+            </div>
+            <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
+              <input
+                type="text"
+                placeholder="タスクタイトル"
+                value={mobileTaskDraft}
+                onChange={e => setMobileTaskDraft(e.target.value)}
+              />
+              <button type="submit">追加</button>
+            </form>
+            {selectedMobileTasks.length === 0 ? (
+              <p className="mobile-empty">この日のタスクはありません</p>
+            ) : (
+              <ul className="mobile-task-list">
+                {selectedMobileTasks.map(task => (
+                  <li key={task.id} className={`mobile-task-item ${task.completed ? 'completed' : ''}`}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={task.completed}
+                        onChange={() => toggleTask(task.id)}
+                      />
+                      <span>{task.title}</span>
+                    </label>
+                    <button type="button" onClick={() => deleteTask(task.id)}>削除</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        )}
+
+        {mobileActivePage === 'memo' && (
+          <section className="mobile-section mobile-memo-page">
+            <div className="mobile-section-heading">
+              <h2>メモ</h2>
+              <span>今日のメモ</span>
+            </div>
+            <textarea
+              value={mobileMemoText}
+              onChange={e => updateMobileMemo(e.target.value)}
+              placeholder="今日のメモを書く..."
             />
-            <button type="submit">追加</button>
-          </form>
-          {selectedMobileTasks.length === 0 ? (
-            <p className="mobile-empty">この日のタスクはありません</p>
-          ) : (
-            <ul className="mobile-task-list">
-              {selectedMobileTasks.map(task => (
-                <li key={task.id} className={`mobile-task-item ${task.completed ? 'completed' : ''}`}>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={task.completed}
-                      onChange={() => toggleTask(task.id)}
-                    />
-                    <span>{task.title}</span>
-                  </label>
-                  <button type="button" onClick={() => deleteTask(task.id)}>削除</button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+          </section>
+        )}
       </main>
 
       {currentView === 'planner' ? (

@@ -1944,6 +1944,7 @@
 .mobile-view {
   display: none;
 }
+.mobile-top-card,
 .mobile-day-card,
 .mobile-section {
   border: 1px solid rgba(15, 23, 42, 0.09);
@@ -1951,17 +1952,20 @@
   background: #fff;
   box-sizing: border-box;
 }
+.mobile-top-card,
 .mobile-day-card {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 14px;
 }
+.mobile-date,
 .mobile-day-top {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
+.mobile-date span,
 .mobile-day-top span,
 .mobile-section-heading span,
 .mobile-sync-message {
@@ -1969,10 +1973,36 @@
   font-size: 12px;
   font-weight: 700;
 }
+.mobile-date strong,
 .mobile-day-top strong {
   color: #0f172a;
   font-size: 18px;
   line-height: 1.35;
+}
+.mobile-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(37, 99, 235, 0.14);
+  border-radius: 10px;
+  background: #eff6ff;
+}
+.mobile-tabs button {
+  min-height: 38px;
+  border: none;
+  border-right: 1px solid rgba(37, 99, 235, 0.14);
+  background: transparent;
+  color: #2563eb;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+}
+.mobile-tabs button:last-child {
+  border-right: none;
+}
+.mobile-tabs button.active {
+  background: #2563eb;
+  color: #fff;
 }
 .mobile-day-controls,
 .mobile-sync-panel,
@@ -2188,6 +2218,20 @@
   padding: 12px;
   text-align: center;
 }
+.mobile-memo-page textarea {
+  width: 100%;
+  min-height: 260px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  background: #fff;
+  box-sizing: border-box;
+  color: #1f2937;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  padding: 12px;
+  resize: vertical;
+}
 @media (max-width: 1180px) {
   .app-header {
     align-items: flex-start;
@@ -2273,8 +2317,16 @@
   }
 }
 @media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    min-height: 100%;
+    overflow-y: auto;
+  }
   .app-root {
     gap: 12px;
+    min-height: 100svh;
+    overflow: visible;
     padding: 10px;
   }
   .app-header {
@@ -2300,7 +2352,17 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+    min-height: 100svh;
+    overflow-y: visible;
+    padding-bottom: 88px;
     width: 100%;
+  }
+  .mobile-schedule-page {
+    overflow: visible;
+    padding-bottom: 88px;
+  }
+  .mobile-timeline {
+    overflow: visible;
   }
 }
 @media (max-width: 620px) {
