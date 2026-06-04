@@ -1109,6 +1109,9 @@
   padding: 6px 9px;
 }
 .dashboard-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
   flex: 1 1 0;
   min-height: 0;
   margin-top: 8px;
@@ -1119,7 +1122,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 8px;
+  margin-bottom: 0;
   padding: 12px 14px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 10px;
@@ -1181,25 +1184,36 @@
 }
 .dashboard-layout {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  gap: 24px;
   align-items: start;
+  flex: 0 0 auto;
+  width: min(calc(100% - 64px), 1180px);
+  margin: 4px auto 36px;
+  min-height: 0;
 }
 .dashboard-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 24px;
+  align-items: stretch;
+  min-height: 0;
 }
 .dashboard-card {
-  min-height: 180px;
-  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 18px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 8px;
   background: #fff;
   box-sizing: border-box;
 }
+.dashboard-grid > .dashboard-card {
+  min-height: 360px;
+}
 .dashboard-card h2 {
-  margin: 0 0 10px;
+  margin: 0 0 12px;
   color: #1f2937;
   font-size: 15px;
 }
@@ -1210,8 +1224,8 @@
 }
 .dashboard-add-form {
   display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
+  gap: 8px;
+  margin: auto 0 0;
   min-width: 0;
 }
 .dashboard-add-form input,
@@ -1270,10 +1284,11 @@
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding: 10px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+  flex: 1 1 auto;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: #fafafa;
+  background: transparent;
   box-sizing: border-box;
 }
 .dashboard-task-section h3 {
@@ -1288,6 +1303,7 @@
   border-color: #2563eb;
   border-style: dashed;
   background: rgba(219, 234, 254, 0.5);
+  padding: 10px;
 }
 .dashboard-drop-hint {
   margin: 0;
@@ -1364,24 +1380,6 @@
 .dashboard-task-delete:hover {
   color: #b91c1c;
 }
-.dashboard-memo-card {
-  display: flex;
-  flex-direction: column;
-  grid-column: 1 / -1;
-}
-.dashboard-memo-card textarea {
-  flex: 1;
-  min-height: 140px;
-  resize: vertical;
-  border: 1px solid rgba(0, 0, 0, 0.1);
-  border-radius: 8px;
-  padding: 10px;
-  background: #fafafa;
-  box-sizing: border-box;
-  color: #2f2f2f;
-  font-size: 13px;
-  line-height: 1.5;
-}
 .event-list li {
   display: flex;
   gap: 8px;
@@ -1450,6 +1448,10 @@
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 4px;
 }
+.dashboard-calendar-card .mini-calendar-grid {
+  flex: 0 0 auto;
+  grid-auto-rows: 38px;
+}
 .mini-calendar-weekdays {
   margin-bottom: 5px;
 }
@@ -1468,6 +1470,10 @@
   min-height: 34px;
   border-radius: 8px;
   box-sizing: border-box;
+}
+.dashboard-calendar-card .mini-calendar-grid button,
+.dashboard-calendar-card .mini-calendar-empty {
+  min-height: 38px;
 }
 .mini-calendar-grid button {
   border: 1px solid transparent;
@@ -2103,6 +2109,7 @@
 }
 .mobile-timeline {
   position: relative;
+  flex: 0 0 auto;
   overflow: hidden;
   border: 1px solid rgba(15, 23, 42, 0.08);
   border-radius: 10px;
@@ -2132,6 +2139,15 @@
   z-index: 1;
   pointer-events: none;
 }
+.mobile-timeline-grid::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: rgba(15, 23, 42, 0.09);
+}
 .mobile-event-layer {
   z-index: 10;
   pointer-events: none;
@@ -2157,7 +2173,7 @@
   line-height: 1;
 }
 .mobile-hour-line {
-  border-left: 1px solid rgba(15, 23, 42, 0.09);
+  border-left: none;
 }
 .mobile-hour-end-label {
   position: absolute;
@@ -2192,7 +2208,7 @@
 }
 .mobile-drag-selection {
   position: absolute;
-  left: 58px;
+  left: 0;
   right: 8px;
   display: flex;
   align-items: center;
@@ -2388,7 +2404,7 @@
 }
 .mobile-event-card {
   position: absolute;
-  left: 64px;
+  left: 0;
   right: 8px;
   display: flex;
   align-items: center;
@@ -2403,7 +2419,7 @@
   cursor: pointer;
   min-height: 0;
   overflow: hidden;
-  padding: 4px 8px;
+  padding: 4px 8px 4px 64px;
   text-align: left;
   pointer-events: auto;
 }
@@ -2430,6 +2446,7 @@
 .mobile-task-form {
   display: grid;
   grid-template-columns: 1fr auto;
+  margin-top: auto;
 }
 .mobile-task-list {
   display: flex;
@@ -2887,14 +2904,16 @@
   html,
   body,
   #root {
-    min-height: 100%;
+    height: 100%;
+    min-height: 0;
     overflow-x: hidden;
-    overflow-y: auto;
+    overflow-y: hidden;
   }
   .app-root {
     gap: 12px;
-    min-height: 100svh;
-    overflow: visible;
+    height: 100svh;
+    min-height: 0;
+    overflow: hidden;
     padding: 10px;
   }
   .app-header {
@@ -2908,33 +2927,51 @@
     display: none !important;
   }
   .mobile-view {
+    --mobile-fixed-header-height: 132px;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    min-height: 100svh;
-    overflow-y: visible;
-    padding-bottom: 88px;
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    padding-top: calc(var(--mobile-fixed-header-height) + 12px);
+    padding-bottom: 0;
     width: 100%;
   }
   .mobile-top-card {
-    position: sticky;
+    position: fixed;
     top: 10px;
+    left: 10px;
+    right: 10px;
     z-index: 60;
     box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
   }
   .mobile-view.mobile-page-month {
-    height: calc(100svh - 20px);
+    height: 100%;
     min-height: 0;
     overflow: hidden;
     padding-bottom: 0;
+  }
+  .mobile-view.mobile-page-tasks {
+    min-height: 0;
   }
   .mobile-view.mobile-page-month .mobile-month-page {
     flex: 1 1 auto;
     min-height: 0;
   }
-  .mobile-schedule-page {
-    overflow: visible;
+  .mobile-schedule-page,
+  .mobile-task-section,
+  .mobile-memo-page {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     padding-bottom: 88px;
+  }
+  .mobile-schedule-page {
+    padding-top: 0;
   }
   .mobile-timeline {
     overflow: visible;

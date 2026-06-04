@@ -83,6 +83,25 @@ function dateInMonth(date, preferredDay = 1) {
   return formatISO(new Date(year, month, Math.min(preferredDay, daysInMonth)))
 }
 
+function monthCellsFromMonday(monthDate) {
+  const year = monthDate.getFullYear()
+  const month = monthDate.getMonth()
+  const firstDay = new Date(year, month, 1)
+  const leadingBlanks = (firstDay.getDay() + 6) % 7
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const cells = Array.from({ length: leadingBlanks }, () => null)
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    cells.push(formatISO(new Date(year, month, day)))
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push(null)
+  }
+
+  return cells
+}
+
 function minutesFromTime(t) {
   const [hh, mm] = t.split(':').map(Number)
   return hh * 60 + (mm || 0)
@@ -104,6 +123,7 @@ const TIME_LABELS = HOURS.map(hour => {
   if (hour === 24) return '24:00'
   return `${String(hour).padStart(2, '0')}:00`
 })
+const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
 const ROW_HEIGHT = 23 // px per hour
 const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
@@ -1961,8 +1981,6 @@ export default function App() {
     day: 'numeric',
     weekday: 'long'
   })
-  const dashboardMemoKey = dashboardMemoStorageKey(selectedDashboardDate)
-  const dashboardMemoText = memos[dashboardMemoKey] || ''
   const dashboardMonthLabel = dashboardCalendarMonth.toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long'
@@ -1986,8 +2004,7 @@ export default function App() {
     .map(normalizePlannerEvent)
     .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
-  const mobileMemoKey = dashboardMemoStorageKey(selectedMobileDate)
-  const mobileMemoText = memos[mobileMemoKey] || ''
+  const mobileMemoText = memoText
   const mobileDragRange = mobileDragSelection
     ? {
         startMinutes: Math.min(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes),
@@ -2007,24 +2024,9 @@ export default function App() {
     tasks.find(item => item.id === draggedTaskId) || null
   ), [tasks, draggedTaskId])
   const canDropTaskToSelectedDate = Boolean(draggedTask && taskDateKey(draggedTask) !== selectedDashboardDate)
-  const dashboardCalendarCells = useMemo(() => {
-    const year = dashboardCalendarMonth.getFullYear()
-    const month = dashboardCalendarMonth.getMonth()
-    const firstDay = new Date(year, month, 1)
-    const leadingBlanks = (firstDay.getDay() + 6) % 7
-    const daysInMonth = new Date(year, month + 1, 0).getDate()
-    const cells = Array.from({ length: leadingBlanks }, () => null)
-
-    for (let day = 1; day <= daysInMonth; day += 1) {
-      cells.push(formatISO(new Date(year, month, day)))
-    }
-
-    while (cells.length % 7 !== 0) {
-      cells.push(null)
-    }
-
-    return cells
-  }, [dashboardCalendarMonth])
+  const dashboardCalendarCells = useMemo(() => (
+    monthCellsFromMonday(dashboardCalendarMonth)
+  ), [dashboardCalendarMonth])
   const dashboardEventEndOptions = useMemo(() => (
     TIME_OPTIONS.filter(slot => minutesFromTime(slot) > minutesFromTime(dashboardEventDraft.startTime))
   ), [dashboardEventDraft.startTime])
@@ -2038,24 +2040,9 @@ export default function App() {
     year: 'numeric',
     month: 'long'
   })
-  const monthCalendarCells = useMemo(() => {
-    const year = monthViewMonth.getFullYear()
-    const month = monthViewMonth.getMonth()
-    const firstDay = new Date(year, month, 1)
-    const leadingBlanks = firstDay.getDay()
-    const daysInMonth = new Date(year, month + 1, 0).getDate()
-    const cells = Array.from({ length: leadingBlanks }, () => null)
-
-    for (let day = 1; day <= daysInMonth; day += 1) {
-      cells.push(formatISO(new Date(year, month, day)))
-    }
-
-    while (cells.length % 7 !== 0) {
-      cells.push(null)
-    }
-
-    return cells
-  }, [monthViewMonth])
+  const monthCalendarCells = useMemo(() => (
+    monthCellsFromMonday(monthViewMonth)
+  ), [monthViewMonth])
   const selectedMonthDateLabel = dateFromISO(selectedMonthDate).toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long',
@@ -3013,13 +3000,6 @@ export default function App() {
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
-  function updateDashboardMemo(value) {
-    if ((memos[dashboardMemoKey] || '') === value) return
-    saveUndoSnapshot()
-    localStorage.setItem(dashboardMemoKey, value)
-    setMemos(prev => ({ ...prev, [dashboardMemoKey]: value }))
-  }
-
   function changeDashboardMonth(offset) {
     setDashboardCalendarMonth(prev => {
       const next = new Date(prev)
@@ -3159,13 +3139,6 @@ export default function App() {
       }
     ])
     setMobileTaskDraft('')
-  }
-
-  function updateMobileMemo(value) {
-    if ((memos[mobileMemoKey] || '') === value) return
-    saveUndoSnapshot()
-    localStorage.setItem(mobileMemoKey, value)
-    setMemos(prev => ({ ...prev, [mobileMemoKey]: value }))
   }
 
   function openMobileEventModal(event) {
@@ -3514,7 +3487,6 @@ export default function App() {
       .map(normalizePlannerEvent)
       .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
     const dateTasks = sortTasksByOrder(tasks.filter(item => item.date === dateISO))
-    const dateMemo = memos[dashboardMemoStorageKey(dateISO)] || ''
     const eventLines = dateEvents.length
       ? dateEvents.map(event => `・${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`)
       : ['・この日の予定はありません']
@@ -3531,10 +3503,6 @@ export default function App() {
       '【タスク】',
       ...taskLines
     ]
-
-    if (dateMemo.trim()) {
-      lines.push('', '【メモ】', dateMemo.trim())
-    }
 
     return lines.join('\n')
   }
@@ -3747,15 +3715,6 @@ export default function App() {
               <h2>タスク</h2>
               <span>{selectedMobileTasks.length}件</span>
             </div>
-            <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
-              <input
-                type="text"
-                placeholder="タスクタイトル"
-                value={mobileTaskDraft}
-                onChange={e => setMobileTaskDraft(e.target.value)}
-              />
-              <button type="submit">追加</button>
-            </form>
             {selectedMobileTasks.length === 0 ? (
               <p className="mobile-empty">この日のタスクはありません</p>
             ) : (
@@ -3775,6 +3734,15 @@ export default function App() {
                 ))}
               </ul>
             )}
+            <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
+              <input
+                type="text"
+                placeholder="タスクタイトル"
+                value={mobileTaskDraft}
+                onChange={e => setMobileTaskDraft(e.target.value)}
+              />
+              <button type="submit">追加</button>
+            </form>
           </section>
         )}
 
@@ -3787,7 +3755,7 @@ export default function App() {
             </div>
             <div className="mobile-month-calendar-shell">
               <div className="mobile-month-weekdays" aria-hidden="true">
-                {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+                {MONDAY_WEEKDAY_LABELS.map(day => (
                   <span key={day}>{day}</span>
                 ))}
               </div>
@@ -3859,12 +3827,12 @@ export default function App() {
           <section className="mobile-section mobile-memo-page">
             <div className="mobile-section-heading">
               <h2>メモ</h2>
-              <span>{selectedMobileDateLabel}</span>
+              <span>プランナー共通</span>
             </div>
             <textarea
               value={mobileMemoText}
-              onChange={e => updateMobileMemo(e.target.value)}
-              placeholder="この日のメモを書く..."
+              onChange={e => updateMemo(e.target.value)}
+              placeholder="メモを書く..."
             />
           </section>
         )}
@@ -4098,7 +4066,7 @@ export default function App() {
         </section>
 
         <section className="dashboard-layout">
-          <div className="dashboard-card">
+          <div className="dashboard-card dashboard-calendar-card">
             <div className="mini-calendar-top">
               <div className="mini-calendar-nav">
                 <button type="button" onClick={() => changeDashboardMonth(-1)}>&lt;</button>
@@ -4110,7 +4078,7 @@ export default function App() {
               </button>
             </div>
             <div className="mini-calendar-weekdays">
-              {['月', '火', '水', '木', '金', '土', '日'].map(day => (
+              {MONDAY_WEEKDAY_LABELS.map(day => (
                 <span key={day}>{day}</span>
               ))}
             </div>
@@ -4141,6 +4109,18 @@ export default function App() {
           <div className="dashboard-grid">
             <div className="dashboard-card">
               <h2>選択日の予定</h2>
+              {selectedDashboardEvents.length === 0 ? (
+                <p className="dashboard-empty">この日の予定はありません</p>
+              ) : (
+                <ul className="dashboard-list event-list">
+                  {selectedDashboardEvents.map(event => (
+                    <li key={event.id} className={`dashboard-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
+                      <span className="dashboard-event-time">{event.startTime}〜{event.endTime}</span>
+                      <span>{event.title || '無題の予定'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <form className="dashboard-add-form dashboard-event-form" onSubmit={addDashboardEvent}>
                 <input
                   type="text"
@@ -4174,18 +4154,6 @@ export default function App() {
                 </div>
                 <button type="submit">追加</button>
               </form>
-              {selectedDashboardEvents.length === 0 ? (
-                <p className="dashboard-empty">この日の予定はありません</p>
-              ) : (
-                <ul className="dashboard-list event-list">
-                  {selectedDashboardEvents.map(event => (
-                    <li key={event.id} className={`dashboard-event ${isEventInProgress(event) ? 'current-event' : ''}`}>
-                      <span className="dashboard-event-time">{event.startTime}〜{event.endTime}</span>
-                      <span>{event.title || '無題の予定'}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
 
             <div
@@ -4205,18 +4173,6 @@ export default function App() {
                 {canDropTaskToSelectedDate && (
                   <p className="dashboard-drop-hint">ここにドロップしてこの日のタスクにする</p>
                 )}
-                <form className="dashboard-add-form dashboard-task-form" onSubmit={addDashboardTask}>
-                  <input
-                    type="text"
-                    value={dashboardTaskDraft}
-                    onChange={e => setDashboardTaskDraft(e.target.value)}
-                    placeholder="タスクタイトル"
-                    autoCorrect="off"
-                    autoCapitalize="off"
-                    spellCheck={false}
-                  />
-                  <button type="submit">追加</button>
-                </form>
                 {selectedDashboardTasks.length === 0 ? (
                   <p className="dashboard-empty">この日のタスクはありません</p>
                 ) : (
@@ -4262,17 +4218,21 @@ export default function App() {
                     />
                   </ul>
                 )}
+                <form className="dashboard-add-form dashboard-task-form" onSubmit={addDashboardTask}>
+                  <input
+                    type="text"
+                    value={dashboardTaskDraft}
+                    onChange={e => setDashboardTaskDraft(e.target.value)}
+                    placeholder="タスクタイトル"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit">追加</button>
+                </form>
               </div>
             </div>
 
-            <div className="dashboard-card dashboard-memo-card">
-              <h2>選択日のメモ</h2>
-              <textarea
-                value={dashboardMemoText}
-                onChange={e => updateDashboardMemo(e.target.value)}
-                placeholder="この日のメモを書く..."
-              />
-            </div>
           </div>
         </section>
       </main>
@@ -4297,7 +4257,7 @@ export default function App() {
               </button>
             </div>
             <div className="month-mini-weekdays">
-              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+              {MONDAY_WEEKDAY_LABELS.map(day => (
                 <span key={day}>{day}</span>
               ))}
             </div>
@@ -4387,7 +4347,7 @@ export default function App() {
             </div>
 
             <div className="month-weekdays">
-              {['日', '月', '火', '水', '木', '金', '土'].map(day => (
+              {MONDAY_WEEKDAY_LABELS.map(day => (
                 <span key={day}>{day}</span>
               ))}
             </div>
