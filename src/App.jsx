@@ -124,12 +124,8 @@ const PLANNER_SLOT_HOURS = Array.from(
   { length: PLANNER_END_HOUR - PLANNER_START_HOUR },
   (_, i) => PLANNER_START_HOUR + i
 )
-const PLANNER_TIME_MARKS = Array.from(
-  { length: PLANNER_END_HOUR - PLANNER_START_HOUR + 1 },
-  (_, i) => PLANNER_START_HOUR + i
-)
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
-const ROW_HEIGHT = 23 // px per hour
+const ROW_HEIGHT = 23 // fallback px per hour
 const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
 const GRID_START_MINUTES = PLANNER_START_HOUR * 60
@@ -169,18 +165,46 @@ function clampGridMinutes(minutes, min = GRID_START_MINUTES, max = GRID_END_MINU
   return clamp(snapToStep(minutes), min, max)
 }
 
-function gridTopFromMinutes(minutes) {
-  return ((minutes - GRID_START_MINUTES) / 60) * ROW_HEIGHT
+function plannerHourRatioFromMinutes(minutes) {
+  return (minutes - GRID_START_MINUTES) / 60
 }
 
-function gridHeightFromMinutes(startMinutes, endMinutes) {
-  return ((endMinutes - startMinutes) / 60) * ROW_HEIGHT
+function gridTopFromMinutes(minutes, hourHeight = ROW_HEIGHT) {
+  return plannerHourRatioFromMinutes(minutes) * hourHeight
+}
+
+function gridHeightFromMinutes(startMinutes, endMinutes, hourHeight = ROW_HEIGHT) {
+  return ((endMinutes - startMinutes) / 60) * hourHeight
+}
+
+function plannerHourHeightFromElement(element) {
+  if (!element) return ROW_HEIGHT
+
+  const slot = element.matches?.('.slot') ? element : element.querySelector?.('.slot')
+  const measuredSlotHeight = slot?.getBoundingClientRect().height
+  if (Number.isFinite(measuredSlotHeight) && measuredSlotHeight > 0) {
+    return measuredSlotHeight
+  }
+
+  const dayBody = element.matches?.('.day-body') ? element : element.querySelector?.('.day-body')
+  const measuredDayBodyHeight = dayBody?.getBoundingClientRect().height / PLANNER_SLOT_HOURS.length
+  if (Number.isFinite(measuredDayBodyHeight) && measuredDayBodyHeight > 0) {
+    return measuredDayBodyHeight
+  }
+
+  const computedHourHeight = Number.parseFloat(
+    window.getComputedStyle(element).getPropertyValue('--hour-height')
+  )
+
+  return Number.isFinite(computedHourHeight) && computedHourHeight > 0
+    ? computedHourHeight
+    : ROW_HEIGHT
 }
 
 function minutesFromPointer(e, element) {
   const rect = element.getBoundingClientRect()
   const y = e.clientY - rect.top + element.scrollTop
-  const minutesFromStart = (y / ROW_HEIGHT) * 60
+  const minutesFromStart = (y / plannerHourHeightFromElement(element)) * 60
   return clampGridMinutes(GRID_START_MINUTES + minutesFromStart)
 }
 
@@ -1487,6 +1511,7 @@ export default function App() {
   const mobileDragScrollLockRef = useRef(null)
   const mobileScheduleSectionRef = useRef(null)
   const mobileScheduleAutoScrollKeyRef = useRef('')
+  const plannerTimetableRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1506,6 +1531,7 @@ export default function App() {
   const [draggedTaskId, setDraggedTaskId] = useState(null)
   const [dragOverTaskId, setDragOverTaskId] = useState(null)
   const [dragOverTaskEndDate, setDragOverTaskEndDate] = useState(null)
+  const [plannerHourHeight, setPlannerHourHeight] = useState(ROW_HEIGHT)
   const dragSelectionBodyRef = useRef(null)
   const dragSelectionRef = useRef(null)
   const draggedTaskIdRef = useRef(null)
@@ -2072,6 +2098,33 @@ export default function App() {
   ), [events, selectedMonthDate])
 
   useEffect(() => {
+    if (currentView !== 'planner') return undefined
+    const timetable = plannerTimetableRef.current
+    if (!timetable) return undefined
+
+    const updatePlannerHourHeight = () => {
+      const nextHourHeight = plannerHourHeightFromElement(timetable)
+      setPlannerHourHeight(prev => (
+        Math.abs(prev - nextHourHeight) < 0.1 ? prev : nextHourHeight
+      ))
+    }
+
+    updatePlannerHourHeight()
+    window.addEventListener('resize', updatePlannerHourHeight)
+
+    let resizeObserver = null
+    if ('ResizeObserver' in window) {
+      resizeObserver = new window.ResizeObserver(updatePlannerHourHeight)
+      resizeObserver.observe(timetable)
+    }
+
+    return () => {
+      window.removeEventListener('resize', updatePlannerHourHeight)
+      resizeObserver?.disconnect()
+    }
+  }, [currentView])
+
+  useEffect(() => {
     if (mobileActivePage !== 'events') return
     const scheduleSection = mobileScheduleSectionRef.current
     if (!scheduleSection) return
@@ -2293,7 +2346,7 @@ export default function App() {
         if (ev.id !== dragState.eventId) return ev
 
         const deltaY = e.clientY - dragState.originY
-        const stepPixels = ROW_HEIGHT / STEPS_PER_HOUR
+        const stepPixels = (dragState.hourHeight || ROW_HEIGHT) / STEPS_PER_HOUR
         const deltaSteps = Math.round(deltaY / stepPixels)
         const deltaMinutes = deltaSteps * STEP_MINUTES
         let newStart = dragState.initialStart
@@ -2824,7 +2877,8 @@ export default function App() {
       eventId: ev.id,
       originY: e.clientY,
       initialStart: minutesFromTime(ev.startTime),
-      initialEnd: minutesFromTime(ev.endTime)
+      initialEnd: minutesFromTime(ev.endTime),
+      hourHeight: plannerHourHeightFromElement(dayBody)
     })
   }
 
@@ -3728,10 +3782,12 @@ export default function App() {
 
               {selectedMobileDate === currentDateISO && currentMinutes >= GRID_START_MINUTES && currentMinutes < GRID_END_MINUTES && (
                 <div
-                  className="mobile-current-time-line"
+                  className="mobile-current-time-pointer"
                   style={{ top: `${mobileTimelineYForMinutes(currentMinutes)}px` }}
                   aria-hidden="true"
-                />
+                >
+                  ▶
+                </div>
               )}
 
               {mobileDragSelection && mobileDragRange && (
@@ -3961,36 +4017,8 @@ export default function App() {
             <button onClick={() => changeWeek(7)} disabled={!canNextWeek}>&gt;</button>
           </div>
 
-          <div className="timetable weekly">
+          <div className="timetable weekly" ref={plannerTimetableRef}>
               <div className="timetable-grid">
-                <div className="time-col">
-                  <div className="time-header">時間</div>
-                  <div className="time-list" style={{ height: `${PLANNER_SLOT_HOURS.length * ROW_HEIGHT}px` }}>
-                    {PLANNER_TIME_MARKS.map(hour => {
-                      const isStartMark = hour === PLANNER_START_HOUR
-                      const isEndMark = hour === PLANNER_END_HOUR
-                      const className = [
-                        'time-mark',
-                        isStartMark ? 'start' : '',
-                        isEndMark ? 'end' : ''
-                      ].filter(Boolean).join(' ')
-
-                      return (
-                        <div
-                          key={hour}
-                          className={className}
-                          style={{ top: `${(hour - PLANNER_START_HOUR) * ROW_HEIGHT}px` }}
-                        >
-                          <span className="time-mark-label">
-                            {`${String(hour).padStart(2, '0')}:00`}
-                          </span>
-                          {!isStartMark && !isEndMark && <span className="time-mark-line" />}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-
                 <div className="days-col">
                   {weekDates.map(day => {
                     const iso = formatISO(day)
@@ -4013,7 +4041,6 @@ export default function App() {
                             <div
                               key={hour}
                               className="slot"
-                              style={{ height: ROW_HEIGHT + 'px' }}
                             >
                               <span
                                 className={`slot-hour-label ${isToday && hour === currentHour ? 'current-hour' : ''}`}
@@ -4027,9 +4054,9 @@ export default function App() {
                             <div
                               className="drag-selection"
                               style={{
-                                top: gridTopFromMinutes(dragRange.startMinutes) + 'px',
-                                height: gridHeightFromMinutes(dragRange.startMinutes, dragRange.endMinutes) + 'px',
-                                '--event-grid-offset': -gridTopFromMinutes(dragRange.startMinutes) + 'px'
+                                top: gridTopFromMinutes(dragRange.startMinutes, plannerHourHeight) + 'px',
+                                height: gridHeightFromMinutes(dragRange.startMinutes, dragRange.endMinutes, plannerHourHeight) + 'px',
+                                '--event-grid-offset': -gridTopFromMinutes(dragRange.startMinutes, plannerHourHeight) + 'px'
                               }}
                             />
                           )}
@@ -4038,18 +4065,17 @@ export default function App() {
                             const previousEvent = dayEvents[index - 1]
                             const startMinutes = minutesFromTime(ev.startTime)
                             const endMinutes = minutesFromTime(ev.endTime)
-                            const top = gridTopFromMinutes(startMinutes)
-                            const height = gridHeightFromMinutes(startMinutes, endMinutes)
-                            const sizeClass = height < 14 ? 'short-event' : height < 24 ? 'compact-event' : ''
+                            const durationMinutes = endMinutes - startMinutes
+                            const sizeClass = durationMinutes <= 30 ? 'short-event' : durationMinutes <= 60 ? 'compact-event' : ''
                             const connectedClass = previousEvent?.endTime === ev.startTime ? 'connected-top' : ''
                             return (
                               <div
                                 key={ev.id}
                                 className={`event-block ${ev.source === GOOGLE_EVENT_SOURCE ? 'google-event' : ''} ${isEventInProgress(ev) ? 'current-event' : ''} ${sizeClass} ${connectedClass}`}
                                 style={{
-                                  top: top + 'px',
-                                  height: Math.max(1, height) + 'px',
-                                  '--event-grid-offset': -top + 'px'
+                                  top: gridTopFromMinutes(startMinutes, plannerHourHeight) + 'px',
+                                  height: Math.max(1, gridHeightFromMinutes(startMinutes, endMinutes, plannerHourHeight)) + 'px',
+                                  '--event-grid-offset': -gridTopFromMinutes(startMinutes, plannerHourHeight) + 'px'
                                 }}
                                 onClick={e => { e.stopPropagation(); openEdit(ev) }}
                               >

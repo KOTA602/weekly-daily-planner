@@ -456,9 +456,9 @@
   text-overflow: ellipsis;
 }
 .timetable {
-  --hour-height: 23px;
   --planner-hour-count: 19;
-  --task-panel-height: clamp(220px, 30vh, 245px);
+  --task-panel-height: clamp(190px, 26svh, 250px);
+  --hour-height: clamp(19px, 3svh, 34px);
   --day-column-min-width: 140px;
   --day-grid-min-width: calc(var(--day-column-min-width) * 7 + 7px * 6);
   display: flex;
@@ -473,76 +473,12 @@
 }
 .timetable-grid {
   display: grid;
-  grid-template-columns: 68px minmax(var(--day-grid-min-width), 1fr);
+  grid-template-columns: minmax(var(--day-grid-min-width), 1fr);
   flex: 1;
   min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  gap: 7px;
-}
-.time-col {
-  width: 68px;
-  min-width: 68px;
-  flex-shrink: 0;
-  background: #faf7f3;
-  border: 1px solid rgba(0, 0, 0, 0.09);
-  border-radius: 12px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.time-header {
-  height: var(--hour-height);
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  color: #6d6d6d;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.09);
-  box-sizing: border-box;
-  padding: 0;
-  line-height: 1;
-}
-.time-list {
-  position: relative;
-  flex: 0 0 auto;
-}
-.time-mark {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 0;
-}
-.time-mark-label {
-  position: absolute;
-  left: 0;
-  top: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: 14px;
-  transform: translateY(-50%);
-  font-size: 11px;
-  color: #334155;
-  font-weight: 600;
-  white-space: nowrap;
-  line-height: 1;
-}
-.time-mark.start .time-mark-label {
-  transform: translateY(0);
-}
-.time-mark.end .time-mark-label {
-  transform: translateY(-100%);
-}
-.time-mark-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 1px;
-  background: rgba(0, 0, 0, 0.08);
+  gap: 0;
 }
 .days-col {
   display: grid;
@@ -2175,7 +2111,7 @@
   inset: 0;
 }
 .mobile-timeline-grid {
-  z-index: 1;
+  z-index: auto;
   pointer-events: none;
 }
 .mobile-event-layer {
@@ -2194,15 +2130,17 @@
   top: 0;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   width: 58px;
   min-height: 16px;
   transform: translateY(-50%);
+  box-sizing: border-box;
   color: #334155;
   font-size: 12px;
   font-weight: 700;
   line-height: 1;
-  z-index: 2;
+  padding-left: 22px;
+  z-index: 5;
 }
 .mobile-hour-row.start .mobile-hour-label {
   transform: translateY(0);
@@ -2217,26 +2155,23 @@
   top: 0;
   height: 1px;
   background: rgba(15, 23, 42, 0.09);
+  z-index: 25;
 }
-.mobile-current-time-line {
+.mobile-current-time-pointer {
   position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: #ef4444;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  transform: translateY(-50%);
   z-index: 30;
   pointer-events: none;
-}
-.mobile-current-time-line::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: -3px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #ef4444;
-  transform: translateX(-50%);
 }
 .mobile-drag-selection {
   position: absolute;
@@ -2440,9 +2375,8 @@
   right: 8px;
   display: flex;
   align-items: center;
+  justify-content: center;
   border: none;
-  border-top: 1px solid #1e3a8a;
-  border-bottom: 1px solid #1e3a8a;
   border-radius: 0;
   background: rgba(219, 234, 254, 0.28);
   box-shadow: none;
@@ -2451,13 +2385,11 @@
   cursor: pointer;
   min-height: 0;
   overflow: hidden;
-  padding: 4px 8px 4px 64px;
-  text-align: left;
+  padding: 4px 10px;
+  text-align: center;
   pointer-events: auto;
 }
 .mobile-event-card.current-event {
-  border-top-color: #ea580c;
-  border-bottom-color: #ea580c;
   background: rgba(255, 237, 213, 0.36);
   color: #9a3412;
 }
@@ -2466,12 +2398,16 @@
   border-right: none;
 }
 .mobile-event-title {
+  position: relative;
+  z-index: 1;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   color: inherit;
   font-size: 13px;
   font-weight: 800;
   line-height: 1.25;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
