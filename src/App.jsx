@@ -127,6 +127,21 @@ const PLANNER_SLOT_HOURS = Array.from(
   (_, i) => PLANNER_START_HOUR + i
 )
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
+const NOTE_DEFAULT_COLOR = '#ffffff'
+const NOTE_COLOR_OPTIONS = [
+  { id: 'white', label: '白', color: '#ffffff' },
+  { id: 'red', label: '薄い赤', color: '#fce8e6' },
+  { id: 'orange', label: 'オレンジ', color: '#feefc3' },
+  { id: 'yellow', label: '黄色', color: '#fff8b8' },
+  { id: 'green', label: '薄い緑', color: '#e6f4ea' },
+  { id: 'mint', label: 'ミント', color: '#e0f2f1' },
+  { id: 'cyan', label: '薄い水色', color: '#e8f0fe' },
+  { id: 'blue', label: '青', color: '#d7e3fc' },
+  { id: 'purple', label: '紫', color: '#f3e8fd' },
+  { id: 'pink', label: '薄いピンク', color: '#fde7f3' },
+  { id: 'beige', label: 'ベージュ', color: '#fef7e0' },
+  { id: 'gray', label: 'グレー', color: '#f1f3f4' }
+]
 const WEEKDAY_OPTIONS = [
   { value: 1, label: '月曜日', shortLabel: '月' },
   { value: 2, label: '火曜日', shortLabel: '火' },
@@ -1105,18 +1120,34 @@ function defaultMemos() {
 function normalizePcNote(note) {
   if (!note || typeof note !== 'object' || Array.isArray(note)) return null
 
-  const title = String(note.title ?? '').trim()
-  const content = String(note.content ?? '').trim()
-  if (!title && !content) return null
+  const legacyTitle = String(note.title ?? '').trim()
+  const legacyContent = String(note.content ?? '').trim()
+  const content = legacyTitle && legacyContent
+    ? `${legacyTitle}\n${legacyContent}`.trim()
+    : (legacyTitle || legacyContent)
+  const color = normalizeNoteColor(note.color)
+  if (!content) return null
 
   const timestamp = new Date().toISOString()
 
   return {
     id: String(note.id || createLocalId('pc-note')),
-    title,
     content,
+    color,
     createdAt: String(note.createdAt || timestamp),
     updatedAt: String(note.updatedAt || timestamp)
+  }
+}
+
+function normalizeNoteColor(color) {
+  return NOTE_COLOR_OPTIONS.some(option => option.color === color) ? color : NOTE_DEFAULT_COLOR
+}
+
+function noteDisplayParts(note) {
+  const lines = String(note.content || '').split(/\r?\n/)
+  return {
+    title: lines[0]?.trim() || '',
+    body: lines.slice(1).join('\n').trim()
   }
 }
 
@@ -1144,8 +1175,8 @@ function savePcNotes(notes) {
 
 function createPcNoteDraft() {
   return {
-    title: '',
-    content: ''
+    content: '',
+    color: NOTE_DEFAULT_COLOR
   }
 }
 
@@ -1439,9 +1470,15 @@ function normalizeSupabaseJsonValue(value) {
 }
 
 function plannerSettingsPayload(settings = {}) {
+  const rawSettings = isPlainObject(settings) ? settings : {}
+  const rawPcNotes = Object.prototype.hasOwnProperty.call(rawSettings, 'pcNotes')
+    ? rawSettings.pcNotes
+    : defaultPcNotes()
+
   return {
-    recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || []),
-    recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || [])
+    recurringTaskRules: recurringTaskSettingsPayload(rawSettings.recurringTaskRules || []),
+    recurringTaskExclusions: recurringTaskExclusionsPayload(rawSettings.recurringTaskExclusions || []),
+    pcNotes: normalizePcNotes(rawPcNotes)
   }
 }
 
@@ -1485,6 +1522,7 @@ function plannerDataHasContent(data) {
     || Object.keys(data.memos).length > 0
     || normalizeRecurringTaskRules(data.settings?.recurringTaskRules).length > 0
     || normalizeRecurringTaskExclusions(data.settings?.recurringTaskExclusions).length > 0
+    || normalizePcNotes(data.settings?.pcNotes).length > 0
 }
 
 function comparableEvents(events) {
@@ -1525,7 +1563,8 @@ function comparableSettings(settings = {}) {
   return {
     recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
       .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-    recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || [])
+    recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || []),
+    pcNotes: normalizePcNotes(settings.pcNotes || [])
   }
 }
 
@@ -1644,6 +1683,7 @@ export default function App() {
   const eventsRef = useRef([])
   const tasksRef = useRef([])
   const memosRef = useRef({})
+  const pcNotesRef = useRef([])
   const dragUpdatedEventRef = useRef(null)
   const pendingGoogleInsertIdsRef = useRef(new Set())
   const updateGoogleEventRef = useRef(null)
@@ -1697,7 +1737,7 @@ export default function App() {
       events,
       tasks,
       memos,
-      settings: plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions })
+      settings: plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes })
     }
   }
   const [, setUndoStack] = useState([])
@@ -1755,9 +1795,11 @@ export default function App() {
   const [mobileTaskDragState, setMobileTaskDragState] = useState(null)
   const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
+  const [pcNoteSearch, setPcNoteSearch] = useState('')
   const [isPcNoteComposerOpen, setIsPcNoteComposerOpen] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
   const [pcNoteDraft, setPcNoteDraft] = useState(() => createPcNoteDraft())
+  const [isNoteColorPaletteOpen, setIsNoteColorPaletteOpen] = useState(false)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -1872,6 +1914,7 @@ export default function App() {
   }, [memos, supabaseConfigured])
 
   useEffect(() => {
+    pcNotesRef.current = pcNotes
     savePcNotes(pcNotes)
   }, [pcNotes])
 
@@ -1891,7 +1934,7 @@ export default function App() {
       window.clearTimeout(supabaseSaveTimersRef.current.settings)
     }
 
-    const snapshot = plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions })
+    const snapshot = plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes })
     supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
       void (async () => {
         supabasePushInFlightRef.current += 1
@@ -1914,7 +1957,7 @@ export default function App() {
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
-  }, [recurringTaskRules, recurringTaskExclusions, supabaseConfigured])
+  }, [recurringTaskRules, recurringTaskExclusions, pcNotes, supabaseConfigured])
 
   useEffect(() => {
     googleConnectedRef.current = googleConnected
@@ -1951,11 +1994,13 @@ export default function App() {
           eventsRef.current = remoteData.events
           tasksRef.current = remoteData.tasks
           memosRef.current = remoteData.memos
+          pcNotesRef.current = remoteData.settings.pcNotes || []
           recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
           recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
           setEvents(remoteData.events)
           setTasks(remoteData.tasks)
           setMemos(remoteData.memos)
+          setPcNotes(remoteData.settings.pcNotes || [])
           setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
           setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
           setCloudStatus('connected')
@@ -1972,7 +2017,8 @@ export default function App() {
           ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
           settings: plannerSettingsPayload({
             recurringTaskRules: recurringTaskRulesRef.current,
-            recurringTaskExclusions: recurringTaskExclusionsRef.current
+            recurringTaskExclusions: recurringTaskExclusionsRef.current,
+            pcNotes: pcNotesRef.current
           })
         }
         if (plannerDataHasContent(initialLocalData)) {
@@ -2033,7 +2079,8 @@ export default function App() {
           memos: memosRef.current,
           settings: plannerSettingsPayload({
             recurringTaskRules: recurringTaskRulesRef.current,
-            recurringTaskExclusions: recurringTaskExclusionsRef.current
+            recurringTaskExclusions: recurringTaskExclusionsRef.current,
+            pcNotes: pcNotesRef.current
           })
         }
 
@@ -2051,11 +2098,13 @@ export default function App() {
         eventsRef.current = remoteData.events
         tasksRef.current = remoteData.tasks
         memosRef.current = remoteData.memos
+        pcNotesRef.current = remoteData.settings.pcNotes || []
         recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
         recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
         setEvents(remoteData.events)
         setTasks(remoteData.tasks)
         setMemos(remoteData.memos)
+        setPcNotes(remoteData.settings.pcNotes || [])
         setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
         setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
         setCloudStatus('connected')
@@ -2173,32 +2222,32 @@ export default function App() {
     function commitPcNoteDraftFromRefs() {
       const draft = pcNoteDraftRef.current
       const editingId = editingPcNoteIdRef.current
-      const title = draft.title.trim()
       const content = draft.content.trim()
       const timestamp = new Date().toISOString()
 
-      if (!title && !content) {
+      if (!content) {
         if (editingId) {
           setPcNotes(prev => prev.filter(note => note.id !== editingId))
         }
         setIsPcNoteComposerOpen(false)
         setEditingPcNoteId(null)
         setPcNoteDraft(createPcNoteDraft())
+        setIsNoteColorPaletteOpen(false)
         return
       }
 
       if (editingId) {
         setPcNotes(prev => normalizePcNotes(prev.map(note => (
           note.id === editingId
-            ? { ...note, title, content, updatedAt: timestamp }
+            ? { ...note, content, color: normalizeNoteColor(draft.color), updatedAt: timestamp }
             : note
         ))))
       } else {
         setPcNotes(prev => normalizePcNotes([
           {
             id: createLocalId('pc-note'),
-            title,
             content,
+            color: normalizeNoteColor(draft.color),
             createdAt: timestamp,
             updatedAt: timestamp
           },
@@ -2209,6 +2258,7 @@ export default function App() {
       setIsPcNoteComposerOpen(false)
       setEditingPcNoteId(null)
       setPcNoteDraft(createPcNoteDraft())
+      setIsNoteColorPaletteOpen(false)
     }
 
     function handlePcNoteOutsidePointerDown(e) {
@@ -2305,7 +2355,12 @@ export default function App() {
     .map(normalizePlannerEvent)
     .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
-  const mobileMemoText = memoText
+  const filteredPcNotes = useMemo(() => {
+    const query = pcNoteSearch.trim().toLowerCase()
+    if (!query) return pcNotes
+
+    return pcNotes.filter(note => String(note.content || '').toLowerCase().includes(query))
+  }, [pcNoteSearch, pcNotes])
   const mobileDragRange = mobileDragSelection
     ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
     : null
@@ -3381,43 +3436,44 @@ export default function App() {
     if (note) {
       setEditingPcNoteId(note.id)
       setPcNoteDraft({
-        title: note.title || '',
-        content: note.content || ''
+        content: note.content || '',
+        color: normalizeNoteColor(note.color)
       })
     } else {
       setEditingPcNoteId(null)
       setPcNoteDraft(createPcNoteDraft())
     }
+    setIsNoteColorPaletteOpen(false)
     setIsPcNoteComposerOpen(true)
   }
 
   function commitPcNoteDraft() {
-    const title = pcNoteDraft.title.trim()
     const content = pcNoteDraft.content.trim()
     const timestamp = new Date().toISOString()
 
-    if (!title && !content) {
+    if (!content) {
       if (editingPcNoteId) {
         setPcNotes(prev => prev.filter(note => note.id !== editingPcNoteId))
       }
       setIsPcNoteComposerOpen(false)
       setEditingPcNoteId(null)
       setPcNoteDraft(createPcNoteDraft())
+      setIsNoteColorPaletteOpen(false)
       return
     }
 
     if (editingPcNoteId) {
       setPcNotes(prev => normalizePcNotes(prev.map(note => (
         note.id === editingPcNoteId
-          ? { ...note, title, content, updatedAt: timestamp }
+          ? { ...note, content, color: normalizeNoteColor(pcNoteDraft.color), updatedAt: timestamp }
           : note
       ))))
     } else {
       setPcNotes(prev => normalizePcNotes([
         {
           id: createLocalId('pc-note'),
-          title,
           content,
+          color: normalizeNoteColor(pcNoteDraft.color),
           createdAt: timestamp,
           updatedAt: timestamp
         },
@@ -3428,6 +3484,7 @@ export default function App() {
     setIsPcNoteComposerOpen(false)
     setEditingPcNoteId(null)
     setPcNoteDraft(createPcNoteDraft())
+    setIsNoteColorPaletteOpen(false)
   }
 
   function deletePcNote(id) {
@@ -3436,6 +3493,7 @@ export default function App() {
       setIsPcNoteComposerOpen(false)
       setEditingPcNoteId(null)
       setPcNoteDraft(createPcNoteDraft())
+      setIsNoteColorPaletteOpen(false)
     }
   }
 
@@ -4088,6 +4146,116 @@ export default function App() {
     }
   }
 
+  function renderNotesWorkspace(mode = 'pc') {
+    const isMobileNotes = mode === 'mobile'
+    const emptyText = pcNoteSearch.trim()
+      ? '一致するメモはありません'
+      : 'メモはまだありません'
+
+    return (
+      <section className={isMobileNotes ? 'pc-notes-shell mobile-notes-shell' : 'pc-notes-shell'}>
+        <div className="pc-note-search">
+          <input
+            type="search"
+            value={pcNoteSearch}
+            onChange={e => setPcNoteSearch(e.target.value)}
+            placeholder="メモを検索"
+            aria-label="メモを検索"
+          />
+        </div>
+
+        <div
+          className={`pc-note-composer ${isPcNoteComposerOpen ? 'expanded' : ''}`}
+          ref={pcNoteComposerRef}
+          style={{ '--note-bg': normalizeNoteColor(pcNoteDraft.color) }}
+        >
+          {isPcNoteComposerOpen ? (
+            <>
+              <textarea
+                className="pc-note-content-input"
+                value={pcNoteDraft.content}
+                onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
+                placeholder="メモを入力..."
+              />
+              <div className="pc-note-composer-actions">
+                <div className="pc-note-color-area">
+                  <button
+                    type="button"
+                    className="pc-note-palette-button"
+                    onClick={() => setIsNoteColorPaletteOpen(prev => !prev)}
+                    aria-label="背景色を変更"
+                    title="背景色を変更"
+                  >
+                    <span className="pc-note-palette-icon" aria-hidden="true" />
+                  </button>
+                  {isNoteColorPaletteOpen && (
+                    <div className="pc-note-color-panel" aria-label="背景色を選択">
+                      {NOTE_COLOR_OPTIONS.map(option => (
+                        <button
+                          type="button"
+                          key={option.id}
+                          className={normalizeNoteColor(pcNoteDraft.color) === option.color ? 'selected' : ''}
+                          style={{ '--swatch-color': option.color }}
+                          onClick={() => setPcNoteDraft(prev => ({ ...prev, color: option.color }))}
+                          aria-label={option.label}
+                          title={option.label}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <button type="button" className="pc-note-close-button" onClick={commitPcNoteDraft}>
+                  閉じる
+                </button>
+              </div>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="pc-note-placeholder"
+              onClick={() => openPcNoteComposer()}
+            >
+              メモを入力...
+            </button>
+          )}
+        </div>
+
+        {filteredPcNotes.length === 0 ? (
+          <p className="pc-notes-empty">{emptyText}</p>
+        ) : (
+          <div className="pc-notes-masonry" aria-label="メモ一覧">
+            {filteredPcNotes.map(note => {
+              const noteParts = noteDisplayParts(note)
+
+              return (
+                <article
+                  key={note.id}
+                  className="pc-note-card"
+                  style={{ '--note-bg': normalizeNoteColor(note.color) }}
+                  onClick={() => openPcNoteComposer(note)}
+                >
+                  {noteParts.title && <h2>{noteParts.title}</h2>}
+                  {noteParts.body && <p>{noteParts.body}</p>}
+                  <div className="pc-note-card-actions">
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation()
+                        deletePcNote(note.id)
+                      }}
+                    >
+                      削除
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
+      </section>
+    )
+  }
+
   return (
     <div className="app-root">
       <header className="app-header">
@@ -4436,13 +4604,9 @@ export default function App() {
           <section className="mobile-section mobile-memo-page">
             <div className="mobile-section-heading">
               <h2>メモ</h2>
-              <span>プランナー共通</span>
+              <span>{pcNotes.length}件</span>
             </div>
-            <textarea
-              value={mobileMemoText}
-              onChange={e => updateMemo(e.target.value)}
-              placeholder="メモを書く..."
-            />
+            {renderNotesWorkspace('mobile')}
           </section>
         )}
       </main>
@@ -4849,72 +5013,7 @@ export default function App() {
       </main>
       ) : currentView === 'notes' ? (
       <main className="pc-notes-view">
-        <section className="pc-notes-shell">
-          <div
-            className={`pc-note-composer ${isPcNoteComposerOpen ? 'expanded' : ''}`}
-            ref={pcNoteComposerRef}
-          >
-            {isPcNoteComposerOpen ? (
-              <>
-                <input
-                  className="pc-note-title-input"
-                  type="text"
-                  value={pcNoteDraft.title}
-                  onChange={e => setPcNoteDraft(prev => ({ ...prev, title: e.target.value }))}
-                  placeholder="タイトル"
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  spellCheck={false}
-                />
-                <textarea
-                  className="pc-note-content-input"
-                  value={pcNoteDraft.content}
-                  onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
-                  placeholder="メモを入力..."
-                />
-                <div className="pc-note-composer-actions">
-                  <button type="button" onClick={commitPcNoteDraft}>閉じる</button>
-                </div>
-              </>
-            ) : (
-              <button
-                type="button"
-                className="pc-note-placeholder"
-                onClick={() => openPcNoteComposer()}
-              >
-                メモを入力...
-              </button>
-            )}
-          </div>
-
-          {pcNotes.length === 0 ? (
-            <p className="pc-notes-empty">メモはまだありません</p>
-          ) : (
-            <div className="pc-notes-masonry" aria-label="PC版メモ一覧">
-              {pcNotes.map(note => (
-                <article
-                  key={note.id}
-                  className="pc-note-card"
-                  onClick={() => openPcNoteComposer(note)}
-                >
-                  {note.title && <h2>{note.title}</h2>}
-                  {note.content && <p>{note.content}</p>}
-                  <div className="pc-note-card-actions">
-                    <button
-                      type="button"
-                      onClick={e => {
-                        e.stopPropagation()
-                        deletePcNote(note.id)
-                      }}
-                    >
-                      削除
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
+        {renderNotesWorkspace('pc')}
       </main>
       ) : (
       <main className="month-view">
