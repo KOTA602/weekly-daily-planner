@@ -4,9 +4,11 @@ import './App.css'
 const EVENT_STORAGE_KEY = 'wdp_events_v1'
 const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
+const PC_NOTES_STORAGE_KEY = 'wdp_pc_notes_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
 const RECURRING_TASKS_STORAGE_KEY = 'wdp_recurring_tasks_v1'
+const RECURRING_TASK_EXCLUSIONS_STORAGE_KEY = 'wdp_recurring_task_exclusions_v1'
 const SHARED_MEMO_KEY = '__shared_memo__'
 const DASHBOARD_MEMO_PREFIX = 'dashboardMemo_'
 const GOOGLE_EVENT_SOURCE = 'google-calendar'
@@ -922,6 +924,36 @@ function saveRecurringTaskRules(rules) {
   localStorage.setItem(RECURRING_TASKS_STORAGE_KEY, JSON.stringify(normalizeRecurringTaskRules(rules)))
 }
 
+function recurringOccurrenceKey(ruleId, dateISO) {
+  return `${ruleId}|${dateISO}`
+}
+
+function normalizeRecurringTaskExclusions(exclusions) {
+  if (!Array.isArray(exclusions)) return []
+
+  const validKeys = exclusions
+    .map(value => String(value || ''))
+    .filter(value => /^[^|]+\|\d{4}-\d{2}-\d{2}$/.test(value))
+
+  return Array.from(new Set(validKeys)).sort((a, b) => a.localeCompare(b))
+}
+
+function defaultRecurringTaskExclusions() {
+  try {
+    const raw = localStorage.getItem(RECURRING_TASK_EXCLUSIONS_STORAGE_KEY)
+    return normalizeRecurringTaskExclusions(raw ? JSON.parse(raw) : [])
+  } catch {
+    return []
+  }
+}
+
+function saveRecurringTaskExclusions(exclusions) {
+  localStorage.setItem(
+    RECURRING_TASK_EXCLUSIONS_STORAGE_KEY,
+    JSON.stringify(normalizeRecurringTaskExclusions(exclusions))
+  )
+}
+
 function recurringTaskSettingsPayload(rules) {
   return normalizeRecurringTaskRules(rules).map(rule => ({
     id: rule.id,
@@ -932,6 +964,10 @@ function recurringTaskSettingsPayload(rules) {
     createdAt: rule.createdAt,
     updatedAt: rule.updatedAt
   }))
+}
+
+function recurringTaskExclusionsPayload(exclusions) {
+  return normalizeRecurringTaskExclusions(exclusions)
 }
 
 function recurringRuleMatchesDate(rule, dateISO) {
@@ -945,6 +981,30 @@ function recurringRuleMatchesDate(rule, dateISO) {
 
 function recurringTaskInstanceId(ruleId, dateISO) {
   return `task-recurring-${ruleId}-${dateISO}`
+}
+
+function recurringTaskInfoFromTask(task) {
+  if (!task) return null
+
+  if (task.recurringTaskId && taskDateKey(task) !== UNDATED_TASK_DATE) {
+    return {
+      ruleId: String(task.recurringTaskId),
+      dateISO: task.recurringTaskDate || taskDateKey(task)
+    }
+  }
+
+  const match = String(task.id || '').match(/^task-recurring-(.+)-(\d{4}-\d{2}-\d{2})$/)
+  if (!match) return null
+
+  return {
+    ruleId: match[1],
+    dateISO: match[2]
+  }
+}
+
+function isTaskFromRecurringRule(task, ruleId) {
+  const info = recurringTaskInfoFromTask(task)
+  return info?.ruleId === ruleId
 }
 
 function createRecurringTaskInstance(rule, dateISO, tasks) {
@@ -963,8 +1023,9 @@ function createRecurringTaskInstance(rule, dateISO, tasks) {
   }
 }
 
-function generateRecurringTasksForDates(tasks, rules, dateISOs) {
+function generateRecurringTasksForDates(tasks, rules, dateISOs, exclusions) {
   const normalizedRules = normalizeRecurringTaskRules(rules)
+  const exclusionSet = new Set(normalizeRecurringTaskExclusions(exclusions))
   const uniqueDates = Array.from(new Set(dateISOs.filter(Boolean)))
   let nextTasks = tasks
   let changed = false
@@ -974,6 +1035,8 @@ function generateRecurringTasksForDates(tasks, rules, dateISOs) {
       if (!recurringRuleMatchesDate(rule, dateISO)) return
 
       const taskId = recurringTaskInstanceId(rule.id, dateISO)
+      if (exclusionSet.has(recurringOccurrenceKey(rule.id, dateISO))) return
+
       const alreadyGenerated = nextTasks.some(task => (
         task.id === taskId
         || (task.recurringTaskId === rule.id && taskDateKey(task) === dateISO)
@@ -1036,6 +1099,53 @@ function defaultMemos() {
     return { ...parsed, ...dashboardMemos, [SHARED_MEMO_KEY]: fallbackMemo }
   } catch {
     return {}
+  }
+}
+
+function normalizePcNote(note) {
+  if (!note || typeof note !== 'object' || Array.isArray(note)) return null
+
+  const title = String(note.title ?? '').trim()
+  const content = String(note.content ?? '').trim()
+  if (!title && !content) return null
+
+  const timestamp = new Date().toISOString()
+
+  return {
+    id: String(note.id || createLocalId('pc-note')),
+    title,
+    content,
+    createdAt: String(note.createdAt || timestamp),
+    updatedAt: String(note.updatedAt || timestamp)
+  }
+}
+
+function normalizePcNotes(notes) {
+  if (!Array.isArray(notes)) return []
+
+  return notes
+    .map(normalizePcNote)
+    .filter(Boolean)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
+}
+
+function defaultPcNotes() {
+  try {
+    const raw = localStorage.getItem(PC_NOTES_STORAGE_KEY)
+    return normalizePcNotes(raw ? JSON.parse(raw) : [])
+  } catch {
+    return []
+  }
+}
+
+function savePcNotes(notes) {
+  localStorage.setItem(PC_NOTES_STORAGE_KEY, JSON.stringify(normalizePcNotes(notes)))
+}
+
+function createPcNoteDraft() {
+  return {
+    title: '',
+    content: ''
   }
 }
 
@@ -1330,7 +1440,8 @@ function normalizeSupabaseJsonValue(value) {
 
 function plannerSettingsPayload(settings = {}) {
   return {
-    recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
+    recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || []),
+    recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || [])
   }
 }
 
@@ -1373,6 +1484,7 @@ function plannerDataHasContent(data) {
     || data.tasks.length > 0
     || Object.keys(data.memos).length > 0
     || normalizeRecurringTaskRules(data.settings?.recurringTaskRules).length > 0
+    || normalizeRecurringTaskExclusions(data.settings?.recurringTaskExclusions).length > 0
 }
 
 function comparableEvents(events) {
@@ -1412,7 +1524,8 @@ function comparableMemos(memos) {
 function comparableSettings(settings = {}) {
   return {
     recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
-      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || [])
   }
 }
 
@@ -1537,6 +1650,7 @@ export default function App() {
   const syncCurrentWeekWithGoogleRef = useRef(null)
   const isSyncingRef = useRef(false)
   const recurringTaskRulesRef = useRef([])
+  const recurringTaskExclusionsRef = useRef([])
   const initialPlannerDataRef = useRef(null)
   const supabaseReadyRef = useRef(false)
   const applyingSupabaseSnapshotRef = useRef(false)
@@ -1563,6 +1677,9 @@ export default function App() {
   const mobileTaskDragListenersCleanupRef = useRef(null)
   const mobileTaskSuppressClickRef = useRef(false)
   const plannerTimetableRef = useRef(null)
+  const pcNoteComposerRef = useRef(null)
+  const pcNoteDraftRef = useRef(createPcNoteDraft())
+  const editingPcNoteIdRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1573,12 +1690,14 @@ export default function App() {
   const [tasks, setTasks] = useState(() => defaultTasks())
   const [memos, setMemos] = useState(() => defaultMemos())
   const [recurringTaskRules, setRecurringTaskRules] = useState(() => defaultRecurringTaskRules())
+  const [recurringTaskExclusions, setRecurringTaskExclusions] = useState(() => defaultRecurringTaskExclusions())
+  const [pcNotes, setPcNotes] = useState(() => defaultPcNotes())
   if (initialPlannerDataRef.current == null) {
     initialPlannerDataRef.current = {
       events,
       tasks,
       memos,
-      settings: plannerSettingsPayload({ recurringTaskRules })
+      settings: plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions })
     }
   }
   const [, setUndoStack] = useState([])
@@ -1636,6 +1755,9 @@ export default function App() {
   const [mobileTaskDragState, setMobileTaskDragState] = useState(null)
   const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
+  const [isPcNoteComposerOpen, setIsPcNoteComposerOpen] = useState(false)
+  const [editingPcNoteId, setEditingPcNoteId] = useState(null)
+  const [pcNoteDraft, setPcNoteDraft] = useState(() => createPcNoteDraft())
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -1750,8 +1872,14 @@ export default function App() {
   }, [memos, supabaseConfigured])
 
   useEffect(() => {
+    savePcNotes(pcNotes)
+  }, [pcNotes])
+
+  useEffect(() => {
     recurringTaskRulesRef.current = recurringTaskRules
+    recurringTaskExclusionsRef.current = recurringTaskExclusions
     saveRecurringTaskRules(recurringTaskRules)
+    saveRecurringTaskExclusions(recurringTaskExclusions)
 
     if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
 
@@ -1763,7 +1891,7 @@ export default function App() {
       window.clearTimeout(supabaseSaveTimersRef.current.settings)
     }
 
-    const snapshot = plannerSettingsPayload({ recurringTaskRules })
+    const snapshot = plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions })
     supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
       void (async () => {
         supabasePushInFlightRef.current += 1
@@ -1786,7 +1914,7 @@ export default function App() {
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
-  }, [recurringTaskRules, supabaseConfigured])
+  }, [recurringTaskRules, recurringTaskExclusions, supabaseConfigured])
 
   useEffect(() => {
     googleConnectedRef.current = googleConnected
@@ -1824,10 +1952,12 @@ export default function App() {
           tasksRef.current = remoteData.tasks
           memosRef.current = remoteData.memos
           recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
+          recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
           setEvents(remoteData.events)
           setTasks(remoteData.tasks)
           setMemos(remoteData.memos)
           setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
+          setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
           setCloudStatus('connected')
           setCloudMessage(`クラウド読込済み ${formatClock(new Date())}`)
 
@@ -1840,7 +1970,10 @@ export default function App() {
 
         const initialLocalData = {
           ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
-          settings: plannerSettingsPayload({ recurringTaskRules: recurringTaskRulesRef.current })
+          settings: plannerSettingsPayload({
+            recurringTaskRules: recurringTaskRulesRef.current,
+            recurringTaskExclusions: recurringTaskExclusionsRef.current
+          })
         }
         if (plannerDataHasContent(initialLocalData)) {
           setCloudStatus('saving')
@@ -1898,7 +2031,10 @@ export default function App() {
           events: eventsRef.current,
           tasks: tasksRef.current,
           memos: memosRef.current,
-          settings: plannerSettingsPayload({ recurringTaskRules: recurringTaskRulesRef.current })
+          settings: plannerSettingsPayload({
+            recurringTaskRules: recurringTaskRulesRef.current,
+            recurringTaskExclusions: recurringTaskExclusionsRef.current
+          })
         }
 
         supabaseRowsRef.current = {
@@ -1916,10 +2052,12 @@ export default function App() {
         tasksRef.current = remoteData.tasks
         memosRef.current = remoteData.memos
         recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
+        recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
         setEvents(remoteData.events)
         setTasks(remoteData.tasks)
         setMemos(remoteData.memos)
         setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
+        setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
         setCloudStatus('connected')
         setCloudMessage(`クラウド更新 ${formatClock(new Date())}`)
 
@@ -2021,6 +2159,67 @@ export default function App() {
     }
   }, [isMobileDragScrollLocked])
 
+  useEffect(() => {
+    pcNoteDraftRef.current = pcNoteDraft
+  }, [pcNoteDraft])
+
+  useEffect(() => {
+    editingPcNoteIdRef.current = editingPcNoteId
+  }, [editingPcNoteId])
+
+  useEffect(() => {
+    if (!isPcNoteComposerOpen) return undefined
+
+    function commitPcNoteDraftFromRefs() {
+      const draft = pcNoteDraftRef.current
+      const editingId = editingPcNoteIdRef.current
+      const title = draft.title.trim()
+      const content = draft.content.trim()
+      const timestamp = new Date().toISOString()
+
+      if (!title && !content) {
+        if (editingId) {
+          setPcNotes(prev => prev.filter(note => note.id !== editingId))
+        }
+        setIsPcNoteComposerOpen(false)
+        setEditingPcNoteId(null)
+        setPcNoteDraft(createPcNoteDraft())
+        return
+      }
+
+      if (editingId) {
+        setPcNotes(prev => normalizePcNotes(prev.map(note => (
+          note.id === editingId
+            ? { ...note, title, content, updatedAt: timestamp }
+            : note
+        ))))
+      } else {
+        setPcNotes(prev => normalizePcNotes([
+          {
+            id: createLocalId('pc-note'),
+            title,
+            content,
+            createdAt: timestamp,
+            updatedAt: timestamp
+          },
+          ...prev
+        ]))
+      }
+
+      setIsPcNoteComposerOpen(false)
+      setEditingPcNoteId(null)
+      setPcNoteDraft(createPcNoteDraft())
+    }
+
+    function handlePcNoteOutsidePointerDown(e) {
+      if (pcNoteComposerRef.current?.contains(e.target)) return
+      commitPcNoteDraftFromRefs()
+    }
+
+    document.addEventListener('pointerdown', handlePcNoteOutsidePointerDown)
+    return () => document.removeEventListener('pointerdown', handlePcNoteOutsidePointerDown)
+  }, [isPcNoteComposerOpen])
+
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
       window.clearTimeout(mobileLongPressTimerRef.current)
@@ -2064,13 +2263,18 @@ export default function App() {
 
     const timerId = window.setTimeout(() => {
       setTasks(prev => {
-        const result = generateRecurringTasksForDates(prev, recurringTaskRules, recurringTaskTargetDates)
+        const result = generateRecurringTasksForDates(
+          prev,
+          recurringTaskRules,
+          recurringTaskTargetDates,
+          recurringTaskExclusions
+        )
         return result.changed ? result.tasks : prev
       })
     }, 0)
 
     return () => window.clearTimeout(timerId)
-  }, [recurringTaskRules, recurringTaskTargetDates])
+  }, [recurringTaskExclusions, recurringTaskRules, recurringTaskTargetDates])
 
   const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
     year: 'numeric',
@@ -2214,6 +2418,8 @@ export default function App() {
       events: cloneUndoData(events),
       tasks: cloneUndoData(tasks),
       memos: cloneUndoData(memos),
+      recurringTaskRules: cloneUndoData(recurringTaskRules),
+      recurringTaskExclusions: cloneUndoData(recurringTaskExclusions),
       centerDateISO: formatISO(centerDate),
       selectedDashboardDate,
       dashboardCalendarMonthISO: formatISO(dashboardCalendarMonth),
@@ -2241,6 +2447,8 @@ export default function App() {
     const restoredEvents = cloneUndoData(snapshot.events)
     const restoredTasks = cloneUndoData(snapshot.tasks)
     const restoredMemos = cloneUndoData(snapshot.memos)
+    const restoredRecurringTaskRules = cloneUndoData(snapshot.recurringTaskRules || recurringTaskRules)
+    const restoredRecurringTaskExclusions = cloneUndoData(snapshot.recurringTaskExclusions || [])
 
     undoStackRef.current = nextStack
     setUndoStack(nextStack)
@@ -2248,6 +2456,8 @@ export default function App() {
     setEvents(restoredEvents)
     setTasks(restoredTasks)
     setMemos(restoredMemos)
+    setRecurringTaskRules(restoredRecurringTaskRules)
+    setRecurringTaskExclusions(restoredRecurringTaskExclusions)
     setCenterDate(startOfWeek(dateFromISO(snapshot.centerDateISO)))
     setSelectedDashboardDate(snapshot.selectedDashboardDate)
     setDashboardCalendarMonth(startOfMonth(dateFromISO(snapshot.dashboardCalendarMonthISO)))
@@ -2999,7 +3209,10 @@ export default function App() {
   }
 
   function deleteRecurringTaskRule(ruleId) {
+    saveUndoSnapshot()
     setRecurringTaskRules(prev => prev.filter(rule => rule.id !== ruleId))
+    setRecurringTaskExclusions(prev => prev.filter(key => !key.startsWith(`${ruleId}|`)))
+    setTasks(prev => prev.filter(task => !isTaskFromRecurringRule(task, ruleId)))
   }
 
   function setActiveDraggedTask(taskId) {
@@ -3145,8 +3358,16 @@ export default function App() {
   }
 
   function deleteTask(id) {
-    if (!tasks.some(item => item.id === id)) return
+    const targetTask = tasks.find(item => item.id === id)
+    if (!targetTask) return
+    const recurringInfo = recurringTaskInfoFromTask(targetTask)
     saveUndoSnapshot()
+    if (recurringInfo?.ruleId && recurringInfo?.dateISO) {
+      setRecurringTaskExclusions(prev => normalizeRecurringTaskExclusions([
+        ...prev,
+        recurringOccurrenceKey(recurringInfo.ruleId, recurringInfo.dateISO)
+      ]))
+    }
     setTasks(prev => prev.filter(item => item.id !== id))
   }
 
@@ -3154,6 +3375,68 @@ export default function App() {
     if ((memos[SHARED_MEMO_KEY] || '') === value) return
     saveUndoSnapshot()
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
+  }
+
+  function openPcNoteComposer(note = null) {
+    if (note) {
+      setEditingPcNoteId(note.id)
+      setPcNoteDraft({
+        title: note.title || '',
+        content: note.content || ''
+      })
+    } else {
+      setEditingPcNoteId(null)
+      setPcNoteDraft(createPcNoteDraft())
+    }
+    setIsPcNoteComposerOpen(true)
+  }
+
+  function commitPcNoteDraft() {
+    const title = pcNoteDraft.title.trim()
+    const content = pcNoteDraft.content.trim()
+    const timestamp = new Date().toISOString()
+
+    if (!title && !content) {
+      if (editingPcNoteId) {
+        setPcNotes(prev => prev.filter(note => note.id !== editingPcNoteId))
+      }
+      setIsPcNoteComposerOpen(false)
+      setEditingPcNoteId(null)
+      setPcNoteDraft(createPcNoteDraft())
+      return
+    }
+
+    if (editingPcNoteId) {
+      setPcNotes(prev => normalizePcNotes(prev.map(note => (
+        note.id === editingPcNoteId
+          ? { ...note, title, content, updatedAt: timestamp }
+          : note
+      ))))
+    } else {
+      setPcNotes(prev => normalizePcNotes([
+        {
+          id: createLocalId('pc-note'),
+          title,
+          content,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        },
+        ...prev
+      ]))
+    }
+
+    setIsPcNoteComposerOpen(false)
+    setEditingPcNoteId(null)
+    setPcNoteDraft(createPcNoteDraft())
+  }
+
+  function deletePcNote(id) {
+    setPcNotes(prev => prev.filter(note => note.id !== id))
+    if (editingPcNoteId === id) {
+      setIsPcNoteComposerOpen(false)
+      setEditingPcNoteId(null)
+      setPcNoteDraft(createPcNoteDraft())
+    }
   }
 
   function changeDashboardMonth(offset) {
@@ -3831,6 +4114,13 @@ export default function App() {
               onClick={() => setCurrentView('month')}
             >
               月表示
+            </button>
+            <button
+              type="button"
+              className={currentView === 'notes' ? 'active' : ''}
+              onClick={() => setCurrentView('notes')}
+            >
+              メモ
             </button>
           </div>
         </div>
@@ -4555,6 +4845,75 @@ export default function App() {
             </div>
 
           </div>
+        </section>
+      </main>
+      ) : currentView === 'notes' ? (
+      <main className="pc-notes-view">
+        <section className="pc-notes-shell">
+          <div
+            className={`pc-note-composer ${isPcNoteComposerOpen ? 'expanded' : ''}`}
+            ref={pcNoteComposerRef}
+          >
+            {isPcNoteComposerOpen ? (
+              <>
+                <input
+                  className="pc-note-title-input"
+                  type="text"
+                  value={pcNoteDraft.title}
+                  onChange={e => setPcNoteDraft(prev => ({ ...prev, title: e.target.value }))}
+                  placeholder="タイトル"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+                <textarea
+                  className="pc-note-content-input"
+                  value={pcNoteDraft.content}
+                  onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
+                  placeholder="メモを入力..."
+                />
+                <div className="pc-note-composer-actions">
+                  <button type="button" onClick={commitPcNoteDraft}>閉じる</button>
+                </div>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="pc-note-placeholder"
+                onClick={() => openPcNoteComposer()}
+              >
+                メモを入力...
+              </button>
+            )}
+          </div>
+
+          {pcNotes.length === 0 ? (
+            <p className="pc-notes-empty">メモはまだありません</p>
+          ) : (
+            <div className="pc-notes-masonry" aria-label="PC版メモ一覧">
+              {pcNotes.map(note => (
+                <article
+                  key={note.id}
+                  className="pc-note-card"
+                  onClick={() => openPcNoteComposer(note)}
+                >
+                  {note.title && <h2>{note.title}</h2>}
+                  {note.content && <p>{note.content}</p>}
+                  <div className="pc-note-card-actions">
+                    <button
+                      type="button"
+                      onClick={e => {
+                        e.stopPropagation()
+                        deletePcNote(note.id)
+                      }}
+                    >
+                      削除
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </main>
       ) : (
