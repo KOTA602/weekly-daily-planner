@@ -129,19 +129,20 @@ const PLANNER_SLOT_HOURS = Array.from(
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
 const NOTE_DEFAULT_COLOR = '#ffffff'
 const NOTE_COLOR_OPTIONS = [
-  { id: 'white', label: '白', color: '#ffffff' },
-  { id: 'red', label: '薄い赤', color: '#fce8e6' },
-  { id: 'orange', label: 'オレンジ', color: '#feefc3' },
-  { id: 'yellow', label: '黄色', color: '#fff8b8' },
-  { id: 'green', label: '薄い緑', color: '#e6f4ea' },
-  { id: 'mint', label: 'ミント', color: '#e0f2f1' },
-  { id: 'cyan', label: '薄い水色', color: '#e8f0fe' },
-  { id: 'blue', label: '青', color: '#d7e3fc' },
-  { id: 'purple', label: '紫', color: '#f3e8fd' },
-  { id: 'pink', label: '薄いピンク', color: '#fde7f3' },
-  { id: 'beige', label: 'ベージュ', color: '#fef7e0' },
-  { id: 'gray', label: 'グレー', color: '#f1f3f4' }
+  { id: 'white', label: '白', color: '#ffffff', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'light-red', label: '薄い赤', color: '#fce8e6', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'light-orange', label: '薄いオレンジ', color: '#feefc3', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'light-yellow', label: '薄い黄色', color: '#fff8b8', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'light-green', label: '薄い緑', color: '#e6f4ea', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'light-blue', label: '薄い水色', color: '#e8f0fe', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'dark-red', label: '濃い赤', color: '#b3261e', textColor: '#ffffff', mutedColor: '#fee2e2' },
+  { id: 'dark-orange', label: '濃いオレンジ', color: '#c2410c', textColor: '#ffffff', mutedColor: '#ffedd5' },
+  { id: 'dark-yellow', label: '濃い黄色', color: '#ca8a04', textColor: '#111827', mutedColor: '#422006' },
+  { id: 'dark-green', label: '濃い緑', color: '#15803d', textColor: '#ffffff', mutedColor: '#dcfce7' },
+  { id: 'dark-blue', label: '濃い青', color: '#1d4ed8', textColor: '#ffffff', mutedColor: '#dbeafe' },
+  { id: 'dark-purple', label: '濃い紫', color: '#6d28d9', textColor: '#ffffff', mutedColor: '#ede9fe' }
 ]
+const LEGACY_NOTE_COLORS = ['#e0f2f1', '#d7e3fc', '#f3e8fd', '#fde7f3', '#fef7e0', '#f1f3f4']
 const WEEKDAY_OPTIONS = [
   { value: 1, label: '月曜日', shortLabel: '月' },
   { value: 2, label: '火曜日', shortLabel: '火' },
@@ -166,6 +167,7 @@ const MOBILE_TIMELINE_MARKS = Array.from(
   (_, i) => GRID_START_MINUTES / 60 + i
 )
 const MOBILE_TIMELINE_HEIGHT = MOBILE_TIMELINE_HOURS.length * MOBILE_HOUR_HEIGHT
+const MONTH_DAY_OPTIONS = Array.from({ length: 31 }, (_, i) => i + 1)
 const TIME_OPTIONS = Array.from(
   { length: (GRID_END_MINUTES - GRID_START_MINUTES) / STEP_MINUTES + 1 },
   (_, i) => minutesToTime(GRID_START_MINUTES + i * STEP_MINUTES)
@@ -1140,7 +1142,25 @@ function normalizePcNote(note) {
 }
 
 function normalizeNoteColor(color) {
-  return NOTE_COLOR_OPTIONS.some(option => option.color === color) ? color : NOTE_DEFAULT_COLOR
+  if (NOTE_COLOR_OPTIONS.some(option => option.color === color)) return color
+  if (LEGACY_NOTE_COLORS.includes(color)) return color
+  return NOTE_DEFAULT_COLOR
+}
+
+function noteColorOption(color) {
+  const normalizedColor = normalizeNoteColor(color)
+  return NOTE_COLOR_OPTIONS.find(option => option.color === normalizedColor) || NOTE_COLOR_OPTIONS[0]
+}
+
+function noteColorStyle(color) {
+  const normalizedColor = normalizeNoteColor(color)
+  const option = noteColorOption(normalizedColor)
+
+  return {
+    '--note-bg': normalizedColor,
+    '--note-fg': option.textColor,
+    '--note-muted': option.mutedColor
+  }
 }
 
 function noteDisplayParts(note) {
@@ -1718,8 +1738,6 @@ export default function App() {
   const mobileTaskSuppressClickRef = useRef(false)
   const plannerTimetableRef = useRef(null)
   const pcNoteComposerRef = useRef(null)
-  const pcNoteDraftRef = useRef(createPcNoteDraft())
-  const editingPcNoteIdRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1796,10 +1814,13 @@ export default function App() {
   const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
   const [pcNoteSearch, setPcNoteSearch] = useState('')
+  const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
   const [isPcNoteComposerOpen, setIsPcNoteComposerOpen] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
   const [pcNoteDraft, setPcNoteDraft] = useState(() => createPcNoteDraft())
+  const [pcNoteEditDraft, setPcNoteEditDraft] = useState(() => createPcNoteDraft())
   const [isNoteColorPaletteOpen, setIsNoteColorPaletteOpen] = useState(false)
+  const [isEditNoteColorPaletteOpen, setIsEditNoteColorPaletteOpen] = useState(false)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -2148,7 +2169,7 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!isEventModalOpen) return undefined
+    if (!isEventModalOpen && !editingPcNoteId) return undefined
 
     const previousBodyOverflow = document.body.style.overflow
     const previousDocumentOverflow = document.documentElement.style.overflow
@@ -2159,7 +2180,7 @@ export default function App() {
       document.body.style.overflow = previousBodyOverflow
       document.documentElement.style.overflow = previousDocumentOverflow
     }
-  }, [isEventModalOpen])
+  }, [isEventModalOpen, editingPcNoteId])
 
   useEffect(() => {
     if (!isMobileDragScrollLocked) return undefined
@@ -2207,68 +2228,6 @@ export default function App() {
       }
     }
   }, [isMobileDragScrollLocked])
-
-  useEffect(() => {
-    pcNoteDraftRef.current = pcNoteDraft
-  }, [pcNoteDraft])
-
-  useEffect(() => {
-    editingPcNoteIdRef.current = editingPcNoteId
-  }, [editingPcNoteId])
-
-  useEffect(() => {
-    if (!isPcNoteComposerOpen) return undefined
-
-    function commitPcNoteDraftFromRefs() {
-      const draft = pcNoteDraftRef.current
-      const editingId = editingPcNoteIdRef.current
-      const content = draft.content.trim()
-      const timestamp = new Date().toISOString()
-
-      if (!content) {
-        if (editingId) {
-          setPcNotes(prev => prev.filter(note => note.id !== editingId))
-        }
-        setIsPcNoteComposerOpen(false)
-        setEditingPcNoteId(null)
-        setPcNoteDraft(createPcNoteDraft())
-        setIsNoteColorPaletteOpen(false)
-        return
-      }
-
-      if (editingId) {
-        setPcNotes(prev => normalizePcNotes(prev.map(note => (
-          note.id === editingId
-            ? { ...note, content, color: normalizeNoteColor(draft.color), updatedAt: timestamp }
-            : note
-        ))))
-      } else {
-        setPcNotes(prev => normalizePcNotes([
-          {
-            id: createLocalId('pc-note'),
-            content,
-            color: normalizeNoteColor(draft.color),
-            createdAt: timestamp,
-            updatedAt: timestamp
-          },
-          ...prev
-        ]))
-      }
-
-      setIsPcNoteComposerOpen(false)
-      setEditingPcNoteId(null)
-      setPcNoteDraft(createPcNoteDraft())
-      setIsNoteColorPaletteOpen(false)
-    }
-
-    function handlePcNoteOutsidePointerDown(e) {
-      if (pcNoteComposerRef.current?.contains(e.target)) return
-      commitPcNoteDraftFromRefs()
-    }
-
-    document.addEventListener('pointerdown', handlePcNoteOutsidePointerDown)
-    return () => document.removeEventListener('pointerdown', handlePcNoteOutsidePointerDown)
-  }, [isPcNoteComposerOpen])
 
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
@@ -3432,68 +3391,98 @@ export default function App() {
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
-  function openPcNoteComposer(note = null) {
-    if (note) {
-      setEditingPcNoteId(note.id)
-      setPcNoteDraft({
-        content: note.content || '',
-        color: normalizeNoteColor(note.color)
-      })
-    } else {
-      setEditingPcNoteId(null)
-      setPcNoteDraft(createPcNoteDraft())
-    }
+  function openPcNoteComposer() {
+    setPcNoteDraft(createPcNoteDraft())
     setIsNoteColorPaletteOpen(false)
     setIsPcNoteComposerOpen(true)
   }
 
-  function commitPcNoteDraft() {
+  function closePcNoteComposer() {
+    setIsPcNoteComposerOpen(false)
+    setPcNoteDraft(createPcNoteDraft())
+    setIsNoteColorPaletteOpen(false)
+  }
+
+  function openPcNoteEditor(note) {
+    setEditingPcNoteId(note.id)
+    setPcNoteEditDraft({
+      content: note.content || '',
+      color: normalizeNoteColor(note.color)
+    })
+    setIsEditNoteColorPaletteOpen(false)
+  }
+
+  function closePcNoteEditor() {
+    setEditingPcNoteId(null)
+    setPcNoteEditDraft(createPcNoteDraft())
+    setIsEditNoteColorPaletteOpen(false)
+  }
+
+  function savePcNoteDraft() {
+    if (isNoteSearchMode) return
+
     const content = pcNoteDraft.content.trim()
-    const timestamp = new Date().toISOString()
 
     if (!content) {
-      if (editingPcNoteId) {
-        setPcNotes(prev => prev.filter(note => note.id !== editingPcNoteId))
-      }
-      setIsPcNoteComposerOpen(false)
-      setEditingPcNoteId(null)
-      setPcNoteDraft(createPcNoteDraft())
-      setIsNoteColorPaletteOpen(false)
+      closePcNoteComposer()
       return
     }
 
-    if (editingPcNoteId) {
-      setPcNotes(prev => normalizePcNotes(prev.map(note => (
-        note.id === editingPcNoteId
-          ? { ...note, content, color: normalizeNoteColor(pcNoteDraft.color), updatedAt: timestamp }
-          : note
-      ))))
-    } else {
-      setPcNotes(prev => normalizePcNotes([
-        {
-          id: createLocalId('pc-note'),
-          content,
-          color: normalizeNoteColor(pcNoteDraft.color),
-          createdAt: timestamp,
-          updatedAt: timestamp
-        },
-        ...prev
-      ]))
+    const timestamp = new Date().toISOString()
+    setPcNotes(prev => normalizePcNotes([
+      {
+        id: createLocalId('pc-note'),
+        content,
+        color: normalizeNoteColor(pcNoteDraft.color),
+        createdAt: timestamp,
+        updatedAt: timestamp
+      },
+      ...prev
+    ]))
+    closePcNoteComposer()
+  }
+
+  function savePcNoteEditDraft() {
+    if (!editingPcNoteId) return
+
+    const content = pcNoteEditDraft.content.trim()
+    if (!content) {
+      deletePcNote(editingPcNoteId)
+      return
     }
 
-    setIsPcNoteComposerOpen(false)
-    setEditingPcNoteId(null)
-    setPcNoteDraft(createPcNoteDraft())
-    setIsNoteColorPaletteOpen(false)
+    const timestamp = new Date().toISOString()
+    setPcNotes(prev => normalizePcNotes(prev.map(note => (
+      note.id === editingPcNoteId
+        ? { ...note, content, color: normalizeNoteColor(pcNoteEditDraft.color), updatedAt: timestamp }
+        : note
+    ))))
+    closePcNoteEditor()
+  }
+
+  function handlePcNoteCreateKeyDown(e) {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    if (e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229) return
+
+    e.preventDefault()
+    savePcNoteDraft()
+  }
+
+  function activateNoteSearchMode() {
+    closePcNoteComposer()
+    setPcNoteSearch('')
+    setIsNoteSearchMode(true)
+  }
+
+  function deactivateNoteSearchMode() {
+    setPcNoteSearch('')
+    setIsNoteSearchMode(false)
   }
 
   function deletePcNote(id) {
     setPcNotes(prev => prev.filter(note => note.id !== id))
     if (editingPcNoteId === id) {
-      setIsPcNoteComposerOpen(false)
-      setEditingPcNoteId(null)
-      setPcNoteDraft(createPcNoteDraft())
-      setIsNoteColorPaletteOpen(false)
+      closePcNoteEditor()
     }
   }
 
@@ -4151,65 +4140,82 @@ export default function App() {
     const emptyText = pcNoteSearch.trim()
       ? '一致するメモはありません'
       : 'メモはまだありません'
+    const inputPlaceholder = isNoteSearchMode ? 'メモを検索...' : 'メモを入力...'
 
     return (
       <section className={isMobileNotes ? 'pc-notes-shell mobile-notes-shell' : 'pc-notes-shell'}>
-        <div className="pc-note-search">
-          <input
-            type="search"
-            value={pcNoteSearch}
-            onChange={e => setPcNoteSearch(e.target.value)}
-            placeholder="メモを検索"
-            aria-label="メモを検索"
-          />
-        </div>
-
-        <div
-          className={`pc-note-composer ${isPcNoteComposerOpen ? 'expanded' : ''}`}
-          ref={pcNoteComposerRef}
-          style={{ '--note-bg': normalizeNoteColor(pcNoteDraft.color) }}
-        >
-          {isPcNoteComposerOpen ? (
-            <>
-              <textarea
-                className="pc-note-content-input"
-                value={pcNoteDraft.content}
-                onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
-                placeholder="メモを入力..."
-              />
-              <div className="pc-note-composer-actions">
-                <div className="pc-note-color-area">
-                  <button
-                    type="button"
-                    className="pc-note-palette-button"
-                    onClick={() => setIsNoteColorPaletteOpen(prev => !prev)}
-                    aria-label="背景色を変更"
-                    title="背景色を変更"
-                  >
-                    <span className="pc-note-palette-icon" aria-hidden="true" />
-                  </button>
-                  {isNoteColorPaletteOpen && (
-                    <div className="pc-note-color-panel" aria-label="背景色を選択">
-                      {NOTE_COLOR_OPTIONS.map(option => (
-                        <button
-                          type="button"
-                          key={option.id}
-                          className={normalizeNoteColor(pcNoteDraft.color) === option.color ? 'selected' : ''}
-                          style={{ '--swatch-color': option.color }}
-                          onClick={() => setPcNoteDraft(prev => ({ ...prev, color: option.color }))}
-                          aria-label={option.label}
-                          title={option.label}
-                        />
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <button type="button" className="pc-note-close-button" onClick={commitPcNoteDraft}>
+        {isNoteSearchMode ? (
+          <div className="pc-note-entry-bar search-mode">
+            <input
+              className="pc-note-entry-input"
+              type="search"
+              value={pcNoteSearch}
+              onChange={e => setPcNoteSearch(e.target.value)}
+              placeholder={inputPlaceholder}
+              aria-label="メモを検索"
+            />
+            <button
+              type="button"
+              className="pc-note-round-button"
+              onClick={deactivateNoteSearchMode}
+              aria-label="メモ入力に戻る"
+              title="メモ入力に戻る"
+            >
+              <span className="pc-note-pencil-icon" aria-hidden="true" />
+            </button>
+          </div>
+        ) : isPcNoteComposerOpen ? (
+          <div
+            className="pc-note-composer expanded"
+            ref={pcNoteComposerRef}
+            style={noteColorStyle(pcNoteDraft.color)}
+          >
+            <textarea
+              className="pc-note-content-input"
+              value={pcNoteDraft.content}
+              onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
+              onKeyDown={isMobileNotes ? undefined : handlePcNoteCreateKeyDown}
+              placeholder={inputPlaceholder}
+            />
+            <div className="pc-note-composer-actions">
+              <div className="pc-note-color-area">
+                <button
+                  type="button"
+                  className="pc-note-palette-button"
+                  onClick={() => setIsNoteColorPaletteOpen(prev => !prev)}
+                  aria-label="背景色を変更"
+                  title="背景色を変更"
+                >
+                  <span className="pc-note-palette-icon" aria-hidden="true" />
+                </button>
+                {isNoteColorPaletteOpen && (
+                  <div className="pc-note-color-panel" aria-label="背景色を選択">
+                    {NOTE_COLOR_OPTIONS.map(option => (
+                      <button
+                        type="button"
+                        key={option.id}
+                        className={normalizeNoteColor(pcNoteDraft.color) === option.color ? 'selected' : ''}
+                        style={{ '--swatch-color': option.color }}
+                        onClick={() => setPcNoteDraft(prev => ({ ...prev, color: option.color }))}
+                        aria-label={option.label}
+                        title={option.label}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="pc-note-action-buttons">
+                <button type="button" className="pc-note-close-button" onClick={closePcNoteComposer}>
                   閉じる
                 </button>
+                <button type="button" className="pc-note-save-button" onClick={savePcNoteDraft}>
+                  保存
+                </button>
               </div>
-            </>
-          ) : (
+            </div>
+          </div>
+        ) : (
+          <div className="pc-note-entry-bar">
             <button
               type="button"
               className="pc-note-placeholder"
@@ -4217,8 +4223,17 @@ export default function App() {
             >
               メモを入力...
             </button>
-          )}
-        </div>
+            <button
+              type="button"
+              className="pc-note-round-button"
+              onClick={activateNoteSearchMode}
+              aria-label="メモを検索"
+              title="メモを検索"
+            >
+              <span className="pc-note-search-icon" aria-hidden="true" />
+            </button>
+          </div>
+        )}
 
         {filteredPcNotes.length === 0 ? (
           <p className="pc-notes-empty">{emptyText}</p>
@@ -4231,8 +4246,8 @@ export default function App() {
                 <article
                   key={note.id}
                   className="pc-note-card"
-                  style={{ '--note-bg': normalizeNoteColor(note.color) }}
-                  onClick={() => openPcNoteComposer(note)}
+                  style={noteColorStyle(note.color)}
+                  onClick={() => openPcNoteEditor(note)}
                 >
                   {noteParts.title && <h2>{noteParts.title}</h2>}
                   {noteParts.body && <p>{noteParts.body}</p>}
@@ -5244,6 +5259,67 @@ export default function App() {
         </div>
       )}
 
+      {editingPcNoteId && (
+        <div className="pc-note-modal-backdrop" role="presentation" onClick={closePcNoteEditor}>
+          <section
+            className="pc-note-edit-modal"
+            style={noteColorStyle(pcNoteEditDraft.color)}
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="pc-note-edit-modal-title"
+          >
+            <h3 id="pc-note-edit-modal-title" className="sr-only">メモを編集</h3>
+            <textarea
+              className="pc-note-content-input"
+              value={pcNoteEditDraft.content}
+              onChange={e => setPcNoteEditDraft(prev => ({ ...prev, content: e.target.value }))}
+              placeholder="メモを入力..."
+              autoFocus={false}
+            />
+            <div className="pc-note-composer-actions pc-note-edit-actions">
+              <div className="pc-note-color-area">
+                <button
+                  type="button"
+                  className="pc-note-palette-button"
+                  onClick={() => setIsEditNoteColorPaletteOpen(prev => !prev)}
+                  aria-label="背景色を変更"
+                  title="背景色を変更"
+                >
+                  <span className="pc-note-palette-icon" aria-hidden="true" />
+                </button>
+                {isEditNoteColorPaletteOpen && (
+                  <div className="pc-note-color-panel" aria-label="背景色を選択">
+                    {NOTE_COLOR_OPTIONS.map(option => (
+                      <button
+                        type="button"
+                        key={option.id}
+                        className={normalizeNoteColor(pcNoteEditDraft.color) === option.color ? 'selected' : ''}
+                        style={{ '--swatch-color': option.color }}
+                        onClick={() => setPcNoteEditDraft(prev => ({ ...prev, color: option.color }))}
+                        aria-label={option.label}
+                        title={option.label}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div className="pc-note-action-buttons">
+                <button type="button" className="pc-note-delete-button" onClick={() => deletePcNote(editingPcNoteId)}>
+                  削除
+                </button>
+                <button type="button" className="pc-note-close-button" onClick={closePcNoteEditor}>
+                  閉じる
+                </button>
+                <button type="button" className="pc-note-save-button" onClick={savePcNoteEditDraft}>
+                  保存
+                </button>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
       {isRecurringTaskModalOpen && (
         <div className="recurring-task-modal-backdrop" role="presentation" onClick={closeRecurringTaskModal}>
           <div
@@ -5265,7 +5341,7 @@ export default function App() {
                   type="text"
                   value={recurringTaskDraft.title}
                   onChange={e => updateRecurringTaskDraft('title', e.target.value)}
-                  placeholder="例：燃えるゴミ"
+                  placeholder="繰り返しタスク名"
                   autoCorrect="off"
                   autoCapitalize="off"
                   spellCheck={false}
@@ -5302,13 +5378,14 @@ export default function App() {
               ) : (
                 <label className="recurring-task-field">
                   <span>毎月何日</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="31"
+                  <select
                     value={recurringTaskDraft.monthDay}
                     onChange={e => updateRecurringTaskDraft('monthDay', normalizeMonthDay(e.target.value))}
-                  />
+                  >
+                    {MONTH_DAY_OPTIONS.map(day => (
+                      <option key={day} value={day}>{day}日</option>
+                    ))}
+                  </select>
                 </label>
               )}
 
