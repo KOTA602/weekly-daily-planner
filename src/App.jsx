@@ -127,22 +127,42 @@ const PLANNER_SLOT_HOURS = Array.from(
   (_, i) => PLANNER_START_HOUR + i
 )
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
-const NOTE_DEFAULT_COLOR = '#ffffff'
+const NOTE_DEFAULT_COLOR = '#FFFFFF'
 const NOTE_COLOR_OPTIONS = [
-  { id: 'white', label: '白', color: '#ffffff', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'light-red', label: '薄い赤', color: '#fce8e6', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'light-orange', label: '薄いオレンジ', color: '#feefc3', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'light-yellow', label: '薄い黄色', color: '#fff8b8', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'light-green', label: '薄い緑', color: '#e6f4ea', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'light-blue', label: '薄い水色', color: '#e8f0fe', textColor: '#0f172a', mutedColor: '#334155' },
-  { id: 'dark-red', label: '濃い赤', color: '#b3261e', textColor: '#ffffff', mutedColor: '#fee2e2' },
-  { id: 'dark-orange', label: '濃いオレンジ', color: '#c2410c', textColor: '#ffffff', mutedColor: '#ffedd5' },
-  { id: 'dark-yellow', label: '濃い黄色', color: '#ca8a04', textColor: '#111827', mutedColor: '#422006' },
-  { id: 'dark-green', label: '濃い緑', color: '#15803d', textColor: '#ffffff', mutedColor: '#dcfce7' },
-  { id: 'dark-blue', label: '濃い青', color: '#1d4ed8', textColor: '#ffffff', mutedColor: '#dbeafe' },
-  { id: 'dark-purple', label: '濃い紫', color: '#6d28d9', textColor: '#ffffff', mutedColor: '#ede9fe' }
+  { id: 'white', label: '白', color: '#FFFFFF', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-red', label: '薄い赤', color: '#EFB2AB', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'orange', label: 'オレンジ', color: '#E7A37D', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'yellow', label: '黄色', color: '#FEF8BF', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-green', label: '薄い緑', color: '#E6F6D6', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'mint', label: 'ミント', color: '#BCDCD3', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-blue', label: '薄い水色', color: '#D7E4EC', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'blue-gray', label: '青みグレー', color: '#B4CBDA', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-purple', label: '薄い紫', color: '#D0C0D9', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-pink', label: '薄いピンク', color: '#F3E3DE', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'beige', label: 'ベージュ', color: '#E8E3D6', textColor: '#0f172a', mutedColor: '#334155' },
+  { id: 'soft-gray', label: '薄いグレー', color: '#EFEFF1', textColor: '#0f172a', mutedColor: '#334155' }
 ]
-const LEGACY_NOTE_COLORS = ['#e0f2f1', '#d7e3fc', '#f3e8fd', '#fde7f3', '#fef7e0', '#f1f3f4']
+const LEGACY_NOTE_COLORS = [
+  '#ffffff',
+  '#fce8e6',
+  '#feefc3',
+  '#fff8b8',
+  '#e6f4ea',
+  '#e8f0fe',
+  '#b3261e',
+  '#c2410c',
+  '#ca8a04',
+  '#15803d',
+  '#1d4ed8',
+  '#6d28d9',
+  '#e0f2f1',
+  '#d7e3fc',
+  '#f3e8fd',
+  '#fde7f3',
+  '#fef7e0',
+  '#f1f3f4'
+]
+const LEGACY_DARK_NOTE_COLORS = ['#b3261e', '#c2410c', '#15803d', '#1d4ed8', '#6d28d9']
 const WEEKDAY_OPTIONS = [
   { value: 1, label: '月曜日', shortLabel: '月' },
   { value: 2, label: '火曜日', shortLabel: '火' },
@@ -1142,8 +1162,11 @@ function normalizePcNote(note) {
 }
 
 function normalizeNoteColor(color) {
-  if (NOTE_COLOR_OPTIONS.some(option => option.color === color)) return color
-  if (LEGACY_NOTE_COLORS.includes(color)) return color
+  const rawColor = String(color || '').trim()
+  const matchedOption = NOTE_COLOR_OPTIONS.find(option => option.color.toLowerCase() === rawColor.toLowerCase())
+  if (matchedOption) return matchedOption.color
+  const legacyColor = LEGACY_NOTE_COLORS.find(value => value.toLowerCase() === rawColor.toLowerCase())
+  if (legacyColor) return legacyColor
   return NOTE_DEFAULT_COLOR
 }
 
@@ -1155,11 +1178,12 @@ function noteColorOption(color) {
 function noteColorStyle(color) {
   const normalizedColor = normalizeNoteColor(color)
   const option = noteColorOption(normalizedColor)
+  const isLegacyDark = LEGACY_DARK_NOTE_COLORS.includes(normalizedColor.toLowerCase())
 
   return {
     '--note-bg': normalizedColor,
-    '--note-fg': option.textColor,
-    '--note-muted': option.mutedColor
+    '--note-fg': isLegacyDark ? '#ffffff' : option.textColor,
+    '--note-muted': isLegacyDark ? '#f8fafc' : option.mutedColor
   }
 }
 
@@ -1737,7 +1761,8 @@ export default function App() {
   const mobileTaskDragListenersCleanupRef = useRef(null)
   const mobileTaskSuppressClickRef = useRef(false)
   const plannerTimetableRef = useRef(null)
-  const pcNoteComposerRef = useRef(null)
+  const pcNoteInputRef = useRef(null)
+  const pcNoteEditInputRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -1815,8 +1840,8 @@ export default function App() {
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
   const [pcNoteSearch, setPcNoteSearch] = useState('')
   const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
-  const [isPcNoteComposerOpen, setIsPcNoteComposerOpen] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
+  const [pcNoteEditMode, setPcNoteEditMode] = useState('pc')
   const [pcNoteDraft, setPcNoteDraft] = useState(() => createPcNoteDraft())
   const [pcNoteEditDraft, setPcNoteEditDraft] = useState(() => createPcNoteDraft())
   const [isNoteColorPaletteOpen, setIsNoteColorPaletteOpen] = useState(false)
@@ -2228,6 +2253,31 @@ export default function App() {
       }
     }
   }, [isMobileDragScrollLocked])
+
+  useEffect(() => {
+    if (currentView !== 'notes' || isNoteSearchMode || editingPcNoteId) return undefined
+
+    const animationId = window.requestAnimationFrame(() => {
+      pcNoteInputRef.current?.focus()
+    })
+
+    return () => window.cancelAnimationFrame(animationId)
+  }, [currentView, isNoteSearchMode, editingPcNoteId])
+
+  useEffect(() => {
+    if (!editingPcNoteId) return undefined
+
+    const animationId = window.requestAnimationFrame(() => {
+      const input = pcNoteEditInputRef.current
+      if (!input) return
+
+      input.focus()
+      const caretPosition = input.value.length
+      input.setSelectionRange(caretPosition, caretPosition)
+    })
+
+    return () => window.cancelAnimationFrame(animationId)
+  }, [editingPcNoteId])
 
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
@@ -3391,20 +3441,15 @@ export default function App() {
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
-  function openPcNoteComposer() {
-    setPcNoteDraft(createPcNoteDraft())
-    setIsNoteColorPaletteOpen(false)
-    setIsPcNoteComposerOpen(true)
-  }
-
   function closePcNoteComposer() {
-    setIsPcNoteComposerOpen(false)
     setPcNoteDraft(createPcNoteDraft())
     setIsNoteColorPaletteOpen(false)
+    pcNoteInputRef.current?.blur()
   }
 
-  function openPcNoteEditor(note) {
+  function openPcNoteEditor(note, mode = 'pc') {
     setEditingPcNoteId(note.id)
+    setPcNoteEditMode(mode)
     setPcNoteEditDraft({
       content: note.content || '',
       color: normalizeNoteColor(note.color)
@@ -3414,6 +3459,7 @@ export default function App() {
 
   function closePcNoteEditor() {
     setEditingPcNoteId(null)
+    setPcNoteEditMode('pc')
     setPcNoteEditDraft(createPcNoteDraft())
     setIsEditNoteColorPaletteOpen(false)
   }
@@ -3439,7 +3485,11 @@ export default function App() {
       },
       ...prev
     ]))
-    closePcNoteComposer()
+    setPcNoteDraft(createPcNoteDraft())
+    setIsNoteColorPaletteOpen(false)
+    if (currentView === 'notes') {
+      window.requestAnimationFrame(() => pcNoteInputRef.current?.focus())
+    }
   }
 
   function savePcNoteEditDraft() {
@@ -3468,8 +3518,17 @@ export default function App() {
     savePcNoteDraft()
   }
 
+  function handlePcNoteEditKeyDown(e) {
+    if (e.key !== 'Enter' || e.shiftKey) return
+    if (e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229) return
+
+    e.preventDefault()
+    savePcNoteEditDraft()
+  }
+
   function activateNoteSearchMode() {
-    closePcNoteComposer()
+    setIsNoteColorPaletteOpen(false)
+    pcNoteInputRef.current?.blur()
     setPcNoteSearch('')
     setIsNoteSearchMode(true)
   }
@@ -4164,13 +4223,13 @@ export default function App() {
               <span className="pc-note-pencil-icon" aria-hidden="true" />
             </button>
           </div>
-        ) : isPcNoteComposerOpen ? (
+        ) : (
           <div
             className="pc-note-composer expanded"
-            ref={pcNoteComposerRef}
             style={noteColorStyle(pcNoteDraft.color)}
           >
             <textarea
+              ref={pcNoteInputRef}
               className="pc-note-content-input"
               value={pcNoteDraft.content}
               onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
@@ -4187,6 +4246,15 @@ export default function App() {
                   title="背景色を変更"
                 >
                   <span className="pc-note-palette-icon" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className="pc-note-round-button"
+                  onClick={activateNoteSearchMode}
+                  aria-label="メモを検索"
+                  title="メモを検索"
+                >
+                  <span className="pc-note-search-icon" aria-hidden="true" />
                 </button>
                 {isNoteColorPaletteOpen && (
                   <div className="pc-note-color-panel" aria-label="背景色を選択">
@@ -4214,25 +4282,6 @@ export default function App() {
               </div>
             </div>
           </div>
-        ) : (
-          <div className="pc-note-entry-bar">
-            <button
-              type="button"
-              className="pc-note-placeholder"
-              onClick={() => openPcNoteComposer()}
-            >
-              メモを入力...
-            </button>
-            <button
-              type="button"
-              className="pc-note-round-button"
-              onClick={activateNoteSearchMode}
-              aria-label="メモを検索"
-              title="メモを検索"
-            >
-              <span className="pc-note-search-icon" aria-hidden="true" />
-            </button>
-          </div>
         )}
 
         {filteredPcNotes.length === 0 ? (
@@ -4247,7 +4296,7 @@ export default function App() {
                   key={note.id}
                   className="pc-note-card"
                   style={noteColorStyle(note.color)}
-                  onClick={() => openPcNoteEditor(note)}
+                  onClick={() => openPcNoteEditor(note, mode)}
                 >
                   {noteParts.title && <h2>{noteParts.title}</h2>}
                   {noteParts.body && <p>{noteParts.body}</p>}
@@ -5260,7 +5309,7 @@ export default function App() {
       )}
 
       {editingPcNoteId && (
-        <div className="pc-note-modal-backdrop" role="presentation" onClick={closePcNoteEditor}>
+        <div className="pc-note-modal-backdrop" role="presentation" onClick={savePcNoteEditDraft}>
           <section
             className="pc-note-edit-modal"
             style={noteColorStyle(pcNoteEditDraft.color)}
@@ -5271,11 +5320,12 @@ export default function App() {
           >
             <h3 id="pc-note-edit-modal-title" className="sr-only">メモを編集</h3>
             <textarea
+              ref={pcNoteEditInputRef}
               className="pc-note-content-input"
               value={pcNoteEditDraft.content}
               onChange={e => setPcNoteEditDraft(prev => ({ ...prev, content: e.target.value }))}
+              onKeyDown={pcNoteEditMode === 'mobile' ? undefined : handlePcNoteEditKeyDown}
               placeholder="メモを入力..."
-              autoFocus={false}
             />
             <div className="pc-note-composer-actions pc-note-edit-actions">
               <div className="pc-note-color-area">
