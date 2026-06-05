@@ -4,7 +4,6 @@ import './App.css'
 const EVENT_STORAGE_KEY = 'wdp_events_v1'
 const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
-const REMINDER_FIRED_STORAGE_KEY = 'wdp_reminders_fired_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
 const SHARED_MEMO_KEY = '__shared_memo__'
@@ -145,17 +144,11 @@ const TIME_OPTIONS = Array.from(
   (_, i) => minutesToTime(GRID_START_MINUTES + i * STEP_MINUTES)
 )
 const START_TIME_OPTIONS = TIME_OPTIONS.slice(0, -1)
-const DEFAULT_EVENT_REMINDER_OFFSETS = [30, 10, 5]
-const EVENT_REMINDER_CHOICES = [
-  { value: 60, label: '1時間前' },
-  { value: 30, label: '30分前' },
-  { value: 10, label: '10分前' },
-  { value: 5, label: '5分前' }
-]
-const REMINDER_GRACE_MS = 90 * 1000
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
 const MOBILE_LONG_PRESS_MS = 400
 const MOBILE_LONG_PRESS_MOVE_CANCEL_PX = 10
+const MOBILE_TASK_LONG_PRESS_MS = 400
+const MOBILE_TASK_MOVE_CANCEL_PX = 10
 
 function snapToStep(minutes) {
   return Math.round(minutes / STEP_MINUTES) * STEP_MINUTES
@@ -285,8 +278,13 @@ function normalizeEventTimeRange(startTime, endTime) {
 }
 
 function normalizePlannerEvent(event) {
+  const eventWithoutReminders = { ...event }
+  delete eventWithoutReminders.reminderOffset
+  delete eventWithoutReminders.reminderOffsets
+  delete eventWithoutReminders.reminders
+
   return {
-    ...event,
+    ...eventWithoutReminders,
     ...normalizeEventTimeRange(event.startTime || '05:00', event.endTime || '06:00')
   }
 }
@@ -357,7 +355,7 @@ function eventToGoogleCalendarPayload(event) {
       timeZone: GOOGLE_TIME_ZONE
     },
     reminders: {
-      useDefault: true
+      useDefault: false
     }
   }
 }
@@ -725,61 +723,6 @@ function createLocalId(prefix) {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`
 }
 
-function dateAtMinutes(dateISO, minutes) {
-  const date = new Date(`${dateISO}T00:00`)
-  date.setMinutes(minutes)
-  return date
-}
-
-function sortReminderOffsets(offsets) {
-  return [...new Set(offsets)]
-    .map(Number)
-    .filter(offset => EVENT_REMINDER_CHOICES.some(choice => choice.value === offset))
-    .sort((a, b) => b - a)
-}
-
-function reminderOffsetLabel(offset) {
-  const choice = EVENT_REMINDER_CHOICES.find(item => item.value === offset)
-  return choice ? choice.label : `${offset}分前`
-}
-
-function reminderOffsetsForEvent(event) {
-  if (Array.isArray(event.reminderOffsets)) {
-    return sortReminderOffsets(event.reminderOffsets)
-  }
-
-  if (Array.isArray(event.reminders)) {
-    return sortReminderOffsets(event.reminders)
-  }
-
-  if (event.reminderOffset !== undefined && event.reminderOffset !== null) {
-    if (event.reminderOffset === '') return []
-    return sortReminderOffsets([event.reminderOffset])
-  }
-
-  return DEFAULT_EVENT_REMINDER_OFFSETS
-}
-
-function eventReminderDueItems(event, nowDate) {
-  const start = dateAtMinutes(event.date, minutesFromTime(event.startTime))
-  const nowMs = nowDate.getTime()
-  const offsets = reminderOffsetsForEvent(event)
-
-  return offsets.map(offset => {
-    const dueAt = new Date(start.getTime() - offset * 60 * 1000)
-    const elapsed = nowMs - dueAt.getTime()
-
-    if (elapsed < 0 || elapsed > REMINDER_GRACE_MS) return null
-
-    return {
-      key: `event:${event.id}:${offset}:${dueAt.toISOString()}`,
-      title: event.title,
-      body: `${event.startTime}からの予定です（${reminderOffsetLabel(offset)}）`,
-      dueAt
-    }
-  }).filter(Boolean)
-}
-
 function dayHeaderTone(date) {
   const day = new Date(date).getDay()
   if (day === 6) return 'saturday'
@@ -939,15 +882,6 @@ function defaultMemos() {
   }
 }
 
-function defaultFiredReminders() {
-  try {
-    const raw = localStorage.getItem(REMINDER_FIRED_STORAGE_KEY)
-    return raw ? JSON.parse(raw) : {}
-  } catch {
-    return {}
-  }
-}
-
 function defaultGoogleConnected() {
   try {
     return localStorage.getItem(GOOGLE_CONNECTED_STORAGE_KEY) === 'true'
@@ -966,10 +900,6 @@ function saveTasks(tasks) {
 
 function saveMemos(memos) {
   localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(memos))
-}
-
-function saveFiredReminders(reminders) {
-  localStorage.setItem(REMINDER_FIRED_STORAGE_KEY, JSON.stringify(reminders))
 }
 
 function saveGoogleConnected(connected) {
@@ -1096,25 +1026,12 @@ async function syncSupabaseRows(table, rows, previousRows = new Map()) {
   return rowsById(rows)
 }
 
-function arrayFromMaybeJson(value) {
-  if (Array.isArray(value)) return value
-  if (typeof value !== 'string') return []
-
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? parsed : []
-  } catch {
-    return []
-  }
-}
-
 function normalizedSupabaseDate(value) {
   return value || null
 }
 
 function eventToSupabaseRow(event, previousRow = null, timestamp = new Date().toISOString()) {
   const normalizedEvent = normalizePlannerEvent(event)
-  const reminders = reminderOffsetsForEvent(normalizedEvent)
   const createdAt = normalizedEvent.createdAt
     || previousRow?.createdAt
     || previousRow?.created_at
@@ -1127,7 +1044,6 @@ function eventToSupabaseRow(event, previousRow = null, timestamp = new Date().to
     startTime: normalizedEvent.startTime,
     endTime: normalizedEvent.endTime,
     googleEventId: normalizedEvent.googleEventId || null,
-    reminders,
     createdAt,
     updatedAt: timestamp
   }
@@ -1141,9 +1057,6 @@ function eventsToSupabaseRows(events, previousRows = new Map(), timestamp = new 
 
 function normalizeSupabaseEvent(row) {
   const id = row.id || createLocalId('event')
-  const reminders = sortReminderOffsets(arrayFromMaybeJson(
-    row.reminders ?? row.reminderOffsets ?? row.reminder_offsets
-  ))
   const normalizedTimes = normalizeEventTimeRange(
     row.startTime ?? row.start_time ?? row.starttime ?? '05:00',
     row.endTime ?? row.end_time ?? row.endtime ?? '06:00'
@@ -1156,8 +1069,6 @@ function normalizeSupabaseEvent(row) {
     date: row.date || formatISO(new Date()),
     ...normalizedTimes,
     googleEventId: row.googleEventId ?? row.google_event_id ?? null,
-    reminders,
-    reminderOffsets: reminders,
     createdAt: row.createdAt ?? row.created_at ?? '',
     updatedAt: row.updatedAt ?? row.updated_at ?? '',
     ...(source ? { source } : {})
@@ -1260,11 +1171,8 @@ function normalizeSupabaseJsonValue(value) {
   }
 }
 
-function plannerSettingsPayload({ firedReminders = {}, notificationPermission = 'default' } = {}) {
-  return {
-    firedReminders: isPlainObject(firedReminders) ? firedReminders : {},
-    notificationPermission
-  }
+function plannerSettingsPayload() {
+  return {}
 }
 
 function settingsToSupabaseRows(settings, previousRows = new Map(), timestamp = new Date().toISOString()) {
@@ -1317,8 +1225,7 @@ function comparableEvents(events) {
         date: normalizedEvent.date || '',
         startTime: normalizedEvent.startTime,
         endTime: normalizedEvent.endTime,
-        googleEventId: normalizedEvent.googleEventId || null,
-        reminders: reminderOffsetsForEvent(normalizedEvent)
+        googleEventId: normalizedEvent.googleEventId || null
       }
     })
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
@@ -1342,15 +1249,8 @@ function comparableMemos(memos) {
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
 }
 
-function comparableSettings(settings = {}) {
-  const normalizedSettings = plannerSettingsPayload(settings)
-
-  return {
-    firedReminders: Object.entries(normalizedSettings.firedReminders)
-      .map(([id, fired]) => ({ id, fired: Boolean(fired) }))
-      .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-    notificationPermission: normalizedSettings.notificationPermission || 'default'
-  }
+function comparableSettings() {
+  return {}
 }
 
 function plannerDataSignature(data) {
@@ -1389,30 +1289,21 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
   const [date, setDate] = useState(initial.date || formatISO(new Date()))
   const [startTime, setStartTime] = useState(initialTimes.startTime)
   const [endTime, setEndTime] = useState(initialTimes.endTime)
-  const [reminderOffsets, setReminderOffsets] = useState(() => reminderOffsetsForEvent(initial))
 
   function submit(e) {
     e && e.preventDefault()
     if (!title.trim()) return
     const eventData = { ...initial }
     delete eventData.reminderOffset
+    delete eventData.reminderOffsets
+    delete eventData.reminders
     const normalizedTimes = normalizeEventTimeRange(startTime, endTime)
 
     onSave({
       ...eventData,
       title,
       date,
-      ...normalizedTimes,
-      reminderOffsets
-    })
-  }
-
-  function toggleReminderOffset(offset) {
-    setReminderOffsets(prev => {
-      if (prev.includes(offset)) {
-        return prev.filter(item => item !== offset)
-      }
-      return sortReminderOffsets([...prev, offset])
+      ...normalizedTimes
     })
   }
 
@@ -1454,31 +1345,6 @@ function EventForm({ initial, onSave, onDelete, onCancel }) {
             </select>
           </label>
         </div>
-        <fieldset className="event-reminder-field">
-          <legend>リマインダー</legend>
-          <div className="event-reminder-options">
-            <button
-              type="button"
-              className={`reminder-option none ${reminderOffsets.length === 0 ? 'active' : ''}`}
-              onClick={() => setReminderOffsets([])}
-            >
-              通知なし
-            </button>
-            {EVENT_REMINDER_CHOICES.map(option => (
-              <label
-                key={option.value}
-                className={`reminder-option ${reminderOffsets.includes(option.value) ? 'active' : ''}`}
-              >
-                <input
-                  type="checkbox"
-                  checked={reminderOffsets.includes(option.value)}
-                  onChange={() => toggleReminderOffset(option.value)}
-                />
-                {option.label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
         <div className="form-actions">
           <button type="button" className="btn ghost" onClick={onCancel}>キャンセル</button>
           {initial.id && (
@@ -1502,8 +1368,6 @@ export default function App() {
   const eventsRef = useRef([])
   const tasksRef = useRef([])
   const memosRef = useRef({})
-  const firedRemindersRef = useRef({})
-  const notificationPermissionRef = useRef('default')
   const dragUpdatedEventRef = useRef(null)
   const pendingGoogleInsertIdsRef = useRef(new Set())
   const updateGoogleEventRef = useRef(null)
@@ -1529,6 +1393,11 @@ export default function App() {
   const mobileDragScrollLockRef = useRef(null)
   const mobileScheduleSectionRef = useRef(null)
   const mobileScheduleAutoScrollKeyRef = useRef('')
+  const mobileTaskListRef = useRef(null)
+  const mobileTaskLongPressTimerRef = useRef(null)
+  const mobileTaskDragStateRef = useRef(null)
+  const mobileTaskDragListenersCleanupRef = useRef(null)
+  const mobileTaskSuppressClickRef = useRef(false)
   const plannerTimetableRef = useRef(null)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
@@ -1557,11 +1426,6 @@ export default function App() {
   const undoActionRef = useRef(null)
   const [now, setNow] = useState(new Date())
   const [taskDrafts, setTaskDrafts] = useState({})
-  const [firedReminders, setFiredReminders] = useState(() => defaultFiredReminders())
-  const [activeReminders, setActiveReminders] = useState([])
-  const [notificationPermission, setNotificationPermission] = useState(() => (
-    'Notification' in window ? window.Notification.permission : 'unsupported'
-  ))
   const [googleReady, setGoogleReady] = useState(false)
   const [googleConnected, setGoogleConnected] = useState(() => googleConfigured && defaultGoogleConnected())
   const [googleStatus, setGoogleStatus] = useState(() => {
@@ -1599,6 +1463,7 @@ export default function App() {
   const [mobileActivePage, setMobileActivePage] = useState('events')
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
+  const [mobileTaskDragState, setMobileTaskDragState] = useState(null)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -1606,7 +1471,6 @@ export default function App() {
   const [draftEventDate, setDraftEventDate] = useState(() => formatISO(new Date()))
   const [draftEventStart, setDraftEventStart] = useState('09:00')
   const [draftEventEnd, setDraftEventEnd] = useState('10:00')
-  const [draftEventReminders, setDraftEventReminders] = useState(DEFAULT_EVENT_REMINDER_OFFSETS)
 
   useEffect(() => {
     eventsRef.current = events
@@ -1714,52 +1578,6 @@ export default function App() {
   }, [memos, supabaseConfigured])
 
   useEffect(() => {
-    firedRemindersRef.current = firedReminders
-    saveFiredReminders(firedReminders)
-
-    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
-
-    lastLocalSupabaseChangeAtRef.current = Date.now()
-    setCloudStatus('saving')
-    setCloudMessage('クラウド保存中')
-
-    if (supabaseSaveTimersRef.current.settings) {
-      window.clearTimeout(supabaseSaveTimersRef.current.settings)
-    }
-
-    const snapshot = plannerSettingsPayload({
-      firedReminders,
-      notificationPermission: notificationPermissionRef.current
-    })
-    supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
-      void (async () => {
-        supabasePushInFlightRef.current += 1
-        try {
-          const timestamp = new Date().toISOString()
-          const rows = settingsToSupabaseRows(snapshot, supabaseRowsRef.current.settings, timestamp)
-          supabaseRowsRef.current.settings = await syncSupabaseRows(
-            'settings',
-            rows,
-            supabaseRowsRef.current.settings
-          )
-          setCloudStatus('connected')
-          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
-        } catch (error) {
-          console.error('Supabase settings sync failed', error)
-          setCloudStatus('error')
-          setCloudMessage('クラウド保存失敗')
-        } finally {
-          supabasePushInFlightRef.current -= 1
-        }
-      })()
-    }, SUPABASE_SAVE_DEBOUNCE_MS)
-  }, [firedReminders, supabaseConfigured])
-
-  useEffect(() => {
-    notificationPermissionRef.current = notificationPermission
-  }, [notificationPermission])
-
-  useEffect(() => {
     googleConnectedRef.current = googleConnected
     saveGoogleConnected(googleConnected)
   }, [googleConnected])
@@ -1789,20 +1607,14 @@ export default function App() {
         }
 
         if (plannerDataHasContent(remoteData)) {
-          const remoteFiredReminders = isPlainObject(remoteData.settings?.firedReminders)
-            ? remoteData.settings.firedReminders
-            : firedRemindersRef.current
-
           applyingSupabaseSnapshotRef.current = true
           supabaseReadyRef.current = false
           eventsRef.current = remoteData.events
           tasksRef.current = remoteData.tasks
           memosRef.current = remoteData.memos
-          firedRemindersRef.current = remoteFiredReminders
           setEvents(remoteData.events)
           setTasks(remoteData.tasks)
           setMemos(remoteData.memos)
-          setFiredReminders(remoteFiredReminders)
           setCloudStatus('connected')
           setCloudMessage(`クラウド読込済み ${formatClock(new Date())}`)
 
@@ -1815,10 +1627,7 @@ export default function App() {
 
         const initialLocalData = {
           ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
-          settings: plannerSettingsPayload({
-            firedReminders: firedRemindersRef.current,
-            notificationPermission: notificationPermissionRef.current
-          })
+          settings: plannerSettingsPayload()
         }
         if (plannerDataHasContent(initialLocalData)) {
           setCloudStatus('saving')
@@ -1876,10 +1685,7 @@ export default function App() {
           events: eventsRef.current,
           tasks: tasksRef.current,
           memos: memosRef.current,
-          settings: plannerSettingsPayload({
-            firedReminders: firedRemindersRef.current,
-            notificationPermission: notificationPermissionRef.current
-          })
+          settings: plannerSettingsPayload()
         }
 
         supabaseRowsRef.current = {
@@ -1891,20 +1697,14 @@ export default function App() {
 
         if (plannerDataEquals(remoteData, currentData)) return
 
-        const remoteFiredReminders = isPlainObject(remoteData.settings?.firedReminders)
-          ? remoteData.settings.firedReminders
-          : firedRemindersRef.current
-
         applyingSupabaseSnapshotRef.current = true
         supabaseReadyRef.current = false
         eventsRef.current = remoteData.events
         tasksRef.current = remoteData.tasks
         memosRef.current = remoteData.memos
-        firedRemindersRef.current = remoteFiredReminders
         setEvents(remoteData.events)
         setTasks(remoteData.tasks)
         setMemos(remoteData.memos)
-        setFiredReminders(remoteFiredReminders)
         setCloudStatus('connected')
         setCloudMessage(`クラウド更新 ${formatClock(new Date())}`)
 
@@ -2010,7 +1810,11 @@ export default function App() {
     if (mobileLongPressTimerRef.current) {
       window.clearTimeout(mobileLongPressTimerRef.current)
     }
+    if (mobileTaskLongPressTimerRef.current) {
+      window.clearTimeout(mobileTaskLongPressTimerRef.current)
+    }
     mobileDragListenersCleanupRef.current?.()
+    mobileTaskDragListenersCleanupRef.current?.()
   }, [])
 
   const weekDates = useMemo(() => {
@@ -2318,42 +2122,6 @@ export default function App() {
     const interval = setInterval(() => setNow(new Date()), 60000)
     return () => clearInterval(interval)
   }, [])
-
-  useEffect(() => {
-    const reminders = []
-
-    events.forEach(event => {
-      reminders.push(...eventReminderDueItems(event, now))
-    })
-
-    const freshReminders = reminders.filter(reminder => !firedReminders[reminder.key])
-    if (!freshReminders.length) return
-
-    const timer = window.setTimeout(() => {
-      setFiredReminders(prev => {
-        const next = { ...prev }
-        freshReminders.forEach(reminder => {
-          next[reminder.key] = true
-        })
-        return next
-      })
-
-      setActiveReminders(prev => [
-        ...prev,
-        ...freshReminders.filter(reminder => !prev.some(item => item.key === reminder.key))
-      ])
-
-      if ('Notification' in window && window.Notification.permission === 'granted') {
-        freshReminders.forEach(reminder => {
-          new window.Notification('リマインダー', {
-            body: `${reminder.title} - ${reminder.body}`
-          })
-        })
-      }
-    }, 0)
-
-    return () => window.clearTimeout(timer)
-  }, [events, firedReminders, now])
 
   useEffect(() => {
     if (!dragState) return
@@ -3070,16 +2838,6 @@ export default function App() {
     moveTaskById(taskId, dateISO)
   }
 
-  async function requestNotificationPermission() {
-    if (!('Notification' in window)) return
-    const permission = await window.Notification.requestPermission()
-    setNotificationPermission(permission)
-  }
-
-  function dismissReminder(key) {
-    setActiveReminders(prev => prev.filter(item => item.key !== key))
-  }
-
   function handleTaskEnter(e, dateISO) {
     if (e.key !== 'Enter') return
     if (e.nativeEvent.isComposing || e.keyCode === 229) return
@@ -3233,6 +2991,137 @@ export default function App() {
     setDashboardCopyMessage('')
   }
 
+  function cleanupMobileTaskDrag() {
+    if (mobileTaskLongPressTimerRef.current) {
+      window.clearTimeout(mobileTaskLongPressTimerRef.current)
+      mobileTaskLongPressTimerRef.current = null
+    }
+    mobileTaskDragListenersCleanupRef.current?.()
+    mobileTaskDragListenersCleanupRef.current = null
+    mobileTaskDragStateRef.current = null
+    setMobileTaskDragState(null)
+  }
+
+  function mobileTaskBeforeIdFromPointer(clientY, draggedTaskId) {
+    const list = mobileTaskListRef.current
+    if (!list) return null
+
+    const taskItems = Array.from(list.querySelectorAll('[data-mobile-task-id]'))
+      .filter(item => item.dataset.mobileTaskId !== draggedTaskId)
+
+    for (const item of taskItems) {
+      const rect = item.getBoundingClientRect()
+      if (clientY < rect.top + rect.height / 2) {
+        return item.dataset.mobileTaskId || null
+      }
+    }
+
+    return null
+  }
+
+  function reorderMobileTask(taskId, dateISO, beforeTaskId) {
+    const currentTasks = tasksRef.current
+    const result = moveTaskInList(currentTasks, taskId, dateISO, beforeTaskId)
+    if (!result.changed) return
+
+    saveUndoSnapshot()
+    setTasks(result.tasks)
+  }
+
+  function startMobileTaskReorder(e, taskId) {
+    if (e.button !== undefined && e.button !== 0) return
+    if (e.target.closest('button, input')) return
+
+    const startState = {
+      taskId,
+      dateISO: selectedMobileDate,
+      pointerId: e.pointerId,
+      startY: e.clientY,
+      currentY: e.clientY,
+      beforeTaskId: taskId,
+      dragging: false
+    }
+
+    cleanupMobileTaskDrag()
+    mobileTaskDragStateRef.current = startState
+
+    const activateDrag = () => {
+      const activeState = mobileTaskDragStateRef.current
+      if (!activeState) return
+
+      const nextState = {
+        ...activeState,
+        dragging: true,
+        beforeTaskId: mobileTaskBeforeIdFromPointer(activeState.currentY, taskId)
+      }
+      mobileTaskDragStateRef.current = nextState
+      setMobileTaskDragState(nextState)
+    }
+
+    function handlePointerMove(moveEvent) {
+      const state = mobileTaskDragStateRef.current
+      if (!state || moveEvent.pointerId !== state.pointerId) return
+
+      const deltaY = moveEvent.clientY - state.startY
+      if (!state.dragging) {
+        if (Math.abs(deltaY) > MOBILE_TASK_MOVE_CANCEL_PX) {
+          cleanupMobileTaskDrag()
+        }
+        return
+      }
+
+      moveEvent.preventDefault()
+      const beforeTaskId = mobileTaskBeforeIdFromPointer(moveEvent.clientY, state.taskId)
+      const nextState = {
+        ...state,
+        currentY: moveEvent.clientY,
+        beforeTaskId
+      }
+      mobileTaskDragStateRef.current = nextState
+      setMobileTaskDragState(nextState)
+    }
+
+    function handlePointerUp(upEvent) {
+      const state = mobileTaskDragStateRef.current
+      if (!state || upEvent.pointerId !== state.pointerId) return
+
+      if (state.dragging) {
+        upEvent.preventDefault()
+        const beforeTaskId = mobileTaskBeforeIdFromPointer(upEvent.clientY, state.taskId)
+        reorderMobileTask(state.taskId, state.dateISO, beforeTaskId)
+        mobileTaskSuppressClickRef.current = true
+        window.setTimeout(() => {
+          mobileTaskSuppressClickRef.current = false
+        }, 0)
+      }
+
+      cleanupMobileTaskDrag()
+    }
+
+    function handlePointerCancel(cancelEvent) {
+      const state = mobileTaskDragStateRef.current
+      if (!state || cancelEvent.pointerId !== state.pointerId) return
+      cleanupMobileTaskDrag()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp, { passive: false })
+    window.addEventListener('pointercancel', handlePointerCancel)
+    mobileTaskDragListenersCleanupRef.current = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+    }
+
+    mobileTaskLongPressTimerRef.current = window.setTimeout(activateDrag, MOBILE_TASK_LONG_PRESS_MS)
+  }
+
+  function suppressMobileTaskClickAfterDrag(e) {
+    if (!mobileTaskSuppressClickRef.current) return
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
   function addMobileTask(e) {
     e.preventDefault()
     const title = mobileTaskDraft.trim()
@@ -3259,7 +3148,6 @@ export default function App() {
     setDraftEventDate(normalizedEvent.date || selectedMobileDate)
     setDraftEventStart(normalizedEvent.startTime)
     setDraftEventEnd(normalizedEvent.endTime)
-    setDraftEventReminders(reminderOffsetsForEvent(normalizedEvent))
     setIsEventModalOpen(true)
   }
 
@@ -3270,7 +3158,6 @@ export default function App() {
     setDraftEventDate(date)
     setDraftEventStart(normalizedTimes.startTime)
     setDraftEventEnd(normalizedTimes.endTime)
-    setDraftEventReminders(DEFAULT_EVENT_REMINDER_OFFSETS)
     setIsEventModalOpen(true)
   }
 
@@ -3291,15 +3178,6 @@ export default function App() {
     })
   }
 
-  function toggleDraftReminder(offset) {
-    setDraftEventReminders(prev => {
-      if (prev.includes(offset)) {
-        return prev.filter(item => item !== offset)
-      }
-      return sortReminderOffsets([...prev, offset])
-    })
-  }
-
   function saveMobileEventModal(e) {
     e.preventDefault()
     const title = draftEventTitle.trim() || '無題の予定'
@@ -3307,9 +3185,7 @@ export default function App() {
     const eventData = {
       title,
       date: draftEventDate,
-      ...normalizedTimes,
-      reminderOffsets: draftEventReminders,
-      reminders: draftEventReminders
+      ...normalizedTimes
     }
 
     if (editingEventId) {
@@ -3710,11 +3586,6 @@ export default function App() {
               </button>
             )}
           </div>
-          {'Notification' in window && notificationPermission !== 'granted' && (
-            <button type="button" className="notification-button" onClick={requestNotificationPermission}>
-              通知許可
-            </button>
-          )}
         </div>
       </header>
 
@@ -3856,9 +3727,23 @@ export default function App() {
             {selectedMobileTasks.length === 0 ? (
               <p className="mobile-empty">この日のタスクはありません</p>
             ) : (
-              <ul className="mobile-task-list">
+              <ul
+                className={`mobile-task-list ${mobileTaskDragState?.dragging ? 'dragging' : ''}`}
+                ref={mobileTaskListRef}
+              >
                 {selectedMobileTasks.map(task => (
-                  <li key={task.id} className={`mobile-task-item ${task.completed ? 'completed' : ''}`}>
+                  <li
+                    key={task.id}
+                    className={[
+                      'mobile-task-item',
+                      task.completed ? 'completed' : '',
+                      mobileTaskDragState?.taskId === task.id && mobileTaskDragState?.dragging ? 'dragging' : '',
+                      mobileTaskDragState?.beforeTaskId === task.id && mobileTaskDragState?.taskId !== task.id ? 'drag-over-before' : ''
+                    ].filter(Boolean).join(' ')}
+                    data-mobile-task-id={task.id}
+                    onPointerDown={e => startMobileTaskReorder(e, task.id)}
+                    onClickCapture={suppressMobileTaskClickAfterDrag}
+                  >
                     <label>
                       <input
                         type="checkbox"
@@ -3870,6 +3755,10 @@ export default function App() {
                     <button type="button" onClick={() => deleteTask(task.id)}>削除</button>
                   </li>
                 ))}
+                <li
+                  className={`mobile-task-drop-end ${mobileTaskDragState?.dragging && !mobileTaskDragState.beforeTaskId ? 'active' : ''}`}
+                  aria-hidden="true"
+                />
               </ul>
             )}
             <form className="mobile-add-form mobile-task-form" onSubmit={addMobileTask}>
@@ -4579,28 +4468,6 @@ export default function App() {
                 </select>
               </label>
             </div>
-            <fieldset className="mobile-event-modal-reminders">
-              <legend>リマインダー</legend>
-              <div className="mobile-event-reminder-chips">
-                <button
-                  type="button"
-                  className={`mobile-event-reminder-chip none ${draftEventReminders.length === 0 ? 'active' : ''}`}
-                  onClick={() => setDraftEventReminders([])}
-                >
-                  通知なし
-                </button>
-                {EVENT_REMINDER_CHOICES.map(option => (
-                  <button
-                    type="button"
-                    key={option.value}
-                    className={`mobile-event-reminder-chip ${draftEventReminders.includes(option.value) ? 'active' : ''}`}
-                    onClick={() => toggleDraftReminder(option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </fieldset>
             <div className="mobile-event-modal-actions">
               <button type="button" className="cancel" onClick={closeMobileEventModal}>
                 キャンセル
@@ -4615,20 +4482,6 @@ export default function App() {
               </button>
             </div>
           </form>
-        </div>
-      )}
-
-      {activeReminders.length > 0 && (
-        <div className="reminder-stack">
-          {activeReminders.map(reminder => (
-            <div className="reminder-toast" key={reminder.key}>
-              <div>
-                <strong>{reminder.title}</strong>
-                <span>{reminder.body}</span>
-              </div>
-              <button type="button" onClick={() => dismissReminder(reminder.key)}>OK</button>
-            </div>
-          ))}
         </div>
       )}
 
