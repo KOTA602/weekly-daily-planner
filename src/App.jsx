@@ -201,6 +201,24 @@ function plannerHourHeightFromElement(element) {
     : ROW_HEIGHT
 }
 
+function plannerAvailableHourHeightFromElement(element) {
+  if (!element) return ROW_HEIGHT
+
+  const grid = element.querySelector?.('.timetable-grid')
+  const dayColumn = element.querySelector?.('.day-column')
+  const dayHeader = element.querySelector?.('.day-header')
+  const tasksPanel = element.querySelector?.('.tasks-panel')
+  const columnHeight = dayColumn?.clientHeight || grid?.clientHeight || 0
+  const availableHeight = columnHeight
+    - (dayHeader?.getBoundingClientRect().height || 0)
+    - (tasksPanel?.getBoundingClientRect().height || 0)
+  const hourHeight = availableHeight / PLANNER_SLOT_HOURS.length
+
+  return Number.isFinite(hourHeight) && hourHeight > 0
+    ? clamp(hourHeight, 12, 56)
+    : plannerHourHeightFromElement(element)
+}
+
 function minutesFromPointer(e, element) {
   const rect = element.getBoundingClientRect()
   const y = e.clientY - rect.top + element.scrollTop
@@ -2103,7 +2121,7 @@ export default function App() {
     if (!timetable) return undefined
 
     const updatePlannerHourHeight = () => {
-      const nextHourHeight = plannerHourHeightFromElement(timetable)
+      const nextHourHeight = plannerAvailableHourHeightFromElement(timetable)
       setPlannerHourHeight(prev => (
         Math.abs(prev - nextHourHeight) < 0.1 ? prev : nextHourHeight
       ))
@@ -4017,7 +4035,11 @@ export default function App() {
             <button onClick={() => changeWeek(7)} disabled={!canNextWeek}>&gt;</button>
           </div>
 
-          <div className="timetable weekly" ref={plannerTimetableRef}>
+          <div
+            className="timetable weekly"
+            ref={plannerTimetableRef}
+            style={{ '--hour-height': `${plannerHourHeight}px` }}
+          >
               <div className="timetable-grid">
                 <div className="days-col">
                   {weekDates.map(day => {

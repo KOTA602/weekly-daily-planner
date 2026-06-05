@@ -340,8 +340,8 @@
 }
 .planner-grid {
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: clamp(240px, 19vw, 272px) minmax(0, 1fr);
+  gap: 10px;
   margin-top: 5px;
   flex: 1 1 0;
   height: auto;
@@ -357,7 +357,7 @@
   flex-direction: column;
   gap: 7px;
   min-height: 0;
-  min-width: 160px;
+  min-width: 220px;
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -457,10 +457,8 @@
 }
 .timetable {
   --planner-hour-count: 19;
-  --task-panel-height: clamp(190px, 26svh, 250px);
-  --hour-height: clamp(19px, 3svh, 34px);
-  --day-column-min-width: 140px;
-  --day-grid-min-width: calc(var(--day-column-min-width) * 7 + 7px * 6);
+  --task-panel-height: clamp(160px, 24svh, 235px);
+  --hour-height: 23px;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -473,28 +471,31 @@
 }
 .timetable-grid {
   display: grid;
-  grid-template-columns: minmax(var(--day-grid-min-width), 1fr);
+  grid-template-columns: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
-  overflow-x: auto;
+  overflow-x: hidden;
   overflow-y: hidden;
   gap: 0;
 }
 .days-col {
   display: grid;
-  grid-template-columns: repeat(7, minmax(var(--day-column-min-width), 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 7px;
-  align-items: start;
+  align-items: stretch;
   flex: 1;
+  height: 100%;
   min-height: 0;
-  min-width: var(--day-grid-min-width);
+  width: 100%;
+  min-width: 0;
   overflow: visible;
 }
 .day-column {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  min-width: var(--day-column-min-width);
+  height: 100%;
+  min-width: 0;
   background: #fff;
   border: 1px solid rgba(0, 0, 0, 0.09);
   border-radius: 12px;
@@ -505,7 +506,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 6px;
-  height: var(--hour-height);
+  flex: 0 0 26px;
+  height: 26px;
   padding: 0 9px;
   font-size: 12px;
   color: #444;
@@ -550,7 +552,7 @@
   flex: 0 0 calc(var(--hour-height) * var(--planner-hour-count));
   height: calc(var(--hour-height) * var(--planner-hour-count));
   min-height: calc(var(--hour-height) * var(--planner-hour-count));
-  overflow: auto;
+  overflow: hidden;
   background: #fff;
   cursor: crosshair;
 }
@@ -2154,7 +2156,7 @@
   right: 0;
   top: 0;
   height: 1px;
-  background: rgba(15, 23, 42, 0.09);
+  background: rgba(30, 58, 138, 0.42);
   z-index: 25;
 }
 .mobile-current-time-pointer {
