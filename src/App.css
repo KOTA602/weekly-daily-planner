@@ -794,6 +794,30 @@
   font-weight: 700;
   color: #333;
 }
+.tasks-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.recurring-task-settings-button {
+  flex: 0 0 auto;
+  min-height: 24px;
+  border: 1px solid rgba(255, 122, 24, 0.22);
+  border-radius: 7px;
+  background: #fff7ed;
+  color: #9a3412;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 6px;
+  white-space: nowrap;
+}
+.recurring-task-settings-button:hover {
+  border-color: rgba(255, 122, 24, 0.42);
+  background: #ffedd5;
+}
 .tasks-list {
   display: flex;
   flex-direction: column;
@@ -2077,14 +2101,15 @@
 }
 .mobile-drag-selection {
   position: absolute;
-  left: 0;
-  right: 8px;
+  left: 66px;
+  right: 10px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-top: 1px solid #1e3a8a;
-  border-bottom: 1px solid #1e3a8a;
-  background: rgba(219, 234, 254, 0.28);
+  border: 1px solid rgba(30, 58, 138, 0.45);
+  border-radius: 8px;
+  background: rgba(219, 234, 254, 0.88);
+  box-shadow: 0 2px 8px rgba(30, 58, 138, 0.12);
   color: #1e3a8a;
   font-size: 12px;
   font-weight: 800;
@@ -2232,6 +2257,213 @@
   background: #f97316;
   color: #fff;
 }
+.recurring-task-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.36);
+  box-sizing: border-box;
+  overflow-x: hidden;
+  padding: 14px;
+}
+.recurring-task-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: min(520px, calc(100vw - 28px));
+  max-height: calc(100svh - 28px);
+  overflow: auto;
+  border-radius: 18px;
+  background: #fff;
+  box-shadow: 0 22px 52px rgba(15, 23, 42, 0.24);
+  box-sizing: border-box;
+  padding: 18px;
+}
+.recurring-task-modal * {
+  box-sizing: border-box;
+}
+.recurring-task-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.recurring-task-modal-header h3 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 18px;
+  font-weight: 900;
+}
+.recurring-task-modal-header button {
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1;
+}
+.recurring-task-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.recurring-task-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+.recurring-task-field input,
+.recurring-task-field select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid rgba(15, 23, 42, 0.13);
+  border-radius: 10px;
+  background: #fff;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 9px 10px;
+}
+.recurring-task-weekdays {
+  margin: 0;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 12px;
+  padding: 10px;
+}
+.recurring-task-weekdays legend {
+  padding: 0 4px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 800;
+}
+.recurring-task-weekdays div {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+}
+.recurring-task-weekdays label {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 10px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+}
+.recurring-task-weekdays input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.recurring-task-weekdays label:has(input:checked) {
+  border-color: rgba(37, 99, 235, 0.38);
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.recurring-task-actions {
+  display: flex;
+  gap: 9px;
+}
+.recurring-task-actions button,
+.recurring-task-rules button {
+  min-height: 38px;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 900;
+}
+.recurring-task-actions .cancel {
+  flex: 1 1 0;
+  background: #f1f5f9;
+  color: #475569;
+}
+.recurring-task-actions .save {
+  flex: 1 1 0;
+  background: #f97316;
+  color: #fff;
+}
+.recurring-task-rules {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  padding-top: 12px;
+}
+.recurring-task-rules h4,
+.recurring-task-rules p {
+  margin: 0;
+}
+.recurring-task-rules h4 {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 900;
+}
+.recurring-task-rules p {
+  color: #64748b;
+  font-size: 12px;
+}
+.recurring-task-rules ul {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.recurring-task-rules li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 8px 9px;
+}
+.recurring-task-rules li div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.recurring-task-rules strong,
+.recurring-task-rules span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recurring-task-rules strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+.recurring-task-rules span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+}
+.recurring-task-rules button {
+  background: #fff1f2;
+  color: #be123c;
+  padding: 0 12px;
+}
 .mobile-event-card {
   position: absolute;
   --mobile-event-border-color: rgba(30, 58, 138, 0.26);
@@ -2291,6 +2523,7 @@
 }
 .mobile-task-list.dragging {
   touch-action: none;
+  -webkit-user-select: none;
   user-select: none;
 }
 .mobile-task-item {
@@ -2303,14 +2536,32 @@
   border-radius: 9px;
   background: #f8fafc;
   padding: 6px 8px;
-  transition: border-color 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease, transform 0.12s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
   touch-action: pan-y;
+  cursor: grab;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.mobile-task-item * {
+  -webkit-user-drag: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .mobile-task-item.dragging {
-  border-color: rgba(37, 99, 235, 0.34);
-  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.16);
-  opacity: 0.72;
-  transform: scale(0.99);
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 16px 32px rgba(37, 99, 235, 0.24), 0 4px 8px rgba(37, 99, 235, 0.12);
+  opacity: 1;
+  background: #eff6ff;
+  z-index: 50;
+  position: relative;
+  cursor: grabbing;
+  transform: translateY(var(--drag-offset-y, 0px)) scale(1.04);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  touch-action: none;
 }
 .mobile-task-item.drag-over-before {
   border-top-color: #2563eb;
@@ -2324,12 +2575,17 @@
   color: #1f2937;
   font-size: 14px;
   font-weight: 700;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 .mobile-task-item label span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  -webkit-user-select: none;
+  user-select: none;
 }
 .mobile-task-item.completed label span {
   color: #64748b;

@@ -6,6 +6,7 @@ const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
+const RECURRING_TASKS_STORAGE_KEY = 'wdp_recurring_tasks_v1'
 const SHARED_MEMO_KEY = '__shared_memo__'
 const DASHBOARD_MEMO_PREFIX = 'dashboardMemo_'
 const GOOGLE_EVENT_SOURCE = 'google-calendar'
@@ -124,6 +125,15 @@ const PLANNER_SLOT_HOURS = Array.from(
   (_, i) => PLANNER_START_HOUR + i
 )
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: '月曜日', shortLabel: '月' },
+  { value: 2, label: '火曜日', shortLabel: '火' },
+  { value: 3, label: '水曜日', shortLabel: '水' },
+  { value: 4, label: '木曜日', shortLabel: '木' },
+  { value: 5, label: '金曜日', shortLabel: '金' },
+  { value: 6, label: '土曜日', shortLabel: '土' },
+  { value: 0, label: '日曜日', shortLabel: '日' }
+]
 const ROW_HEIGHT = 23 // fallback px per hour
 const STEP_MINUTES = 10
 const STEPS_PER_HOUR = 60 / STEP_MINUTES
@@ -843,6 +853,153 @@ function moveTaskInList(tasks, taskId, targetDateISO, beforeTaskId = null) {
   }
 }
 
+function normalizeWeekdays(weekdays) {
+  const validWeekdays = new Set(WEEKDAY_OPTIONS.map(option => option.value))
+  const normalized = Array.isArray(weekdays)
+    ? weekdays.map(value => Number(value)).filter(value => validWeekdays.has(value))
+    : []
+
+  return Array.from(new Set(normalized)).sort((a, b) => {
+    const aIndex = WEEKDAY_OPTIONS.findIndex(option => option.value === a)
+    const bIndex = WEEKDAY_OPTIONS.findIndex(option => option.value === b)
+    return aIndex - bIndex
+  })
+}
+
+function normalizeMonthDay(value) {
+  const parsed = Number.parseInt(value, 10)
+  return clamp(Number.isFinite(parsed) ? parsed : 1, 1, 31)
+}
+
+function createRecurringTaskDraft() {
+  return {
+    title: '',
+    type: 'weekly',
+    weekdays: [1],
+    monthDay: 1
+  }
+}
+
+function normalizeRecurringTaskRule(rule) {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return null
+
+  const title = String(rule.title ?? '').trim()
+  if (!title) return null
+
+  const type = rule.type === 'monthly' ? 'monthly' : 'weekly'
+  const weekdays = normalizeWeekdays(rule.weekdays)
+  const timestamp = new Date().toISOString()
+
+  return {
+    id: String(rule.id || createLocalId('recurring-task')),
+    title,
+    type,
+    weekdays: type === 'weekly' ? (weekdays.length ? weekdays : [1]) : [],
+    monthDay: type === 'monthly' ? normalizeMonthDay(rule.monthDay) : 1,
+    createdAt: String(rule.createdAt || timestamp),
+    updatedAt: String(rule.updatedAt || timestamp)
+  }
+}
+
+function normalizeRecurringTaskRules(rules) {
+  if (!Array.isArray(rules)) return []
+
+  return rules
+    .map(normalizeRecurringTaskRule)
+    .filter(Boolean)
+}
+
+function defaultRecurringTaskRules() {
+  try {
+    const raw = localStorage.getItem(RECURRING_TASKS_STORAGE_KEY)
+    return normalizeRecurringTaskRules(raw ? JSON.parse(raw) : [])
+  } catch {
+    return []
+  }
+}
+
+function saveRecurringTaskRules(rules) {
+  localStorage.setItem(RECURRING_TASKS_STORAGE_KEY, JSON.stringify(normalizeRecurringTaskRules(rules)))
+}
+
+function recurringTaskSettingsPayload(rules) {
+  return normalizeRecurringTaskRules(rules).map(rule => ({
+    id: rule.id,
+    title: rule.title,
+    type: rule.type,
+    weekdays: rule.weekdays,
+    monthDay: rule.monthDay,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt
+  }))
+}
+
+function recurringRuleMatchesDate(rule, dateISO) {
+  const date = dateFromISO(dateISO)
+  if (rule.type === 'monthly') {
+    return date.getDate() === rule.monthDay
+  }
+
+  return rule.weekdays.includes(date.getDay())
+}
+
+function recurringTaskInstanceId(ruleId, dateISO) {
+  return `task-recurring-${ruleId}-${dateISO}`
+}
+
+function createRecurringTaskInstance(rule, dateISO, tasks) {
+  const timestamp = new Date().toISOString()
+
+  return {
+    id: recurringTaskInstanceId(rule.id, dateISO),
+    date: dateISO,
+    title: rule.title,
+    completed: false,
+    order: nextTaskOrder(tasks, dateISO),
+    recurringTaskId: rule.id,
+    recurringTaskDate: dateISO,
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }
+}
+
+function generateRecurringTasksForDates(tasks, rules, dateISOs) {
+  const normalizedRules = normalizeRecurringTaskRules(rules)
+  const uniqueDates = Array.from(new Set(dateISOs.filter(Boolean)))
+  let nextTasks = tasks
+  let changed = false
+
+  normalizedRules.forEach(rule => {
+    uniqueDates.forEach(dateISO => {
+      if (!recurringRuleMatchesDate(rule, dateISO)) return
+
+      const taskId = recurringTaskInstanceId(rule.id, dateISO)
+      const alreadyGenerated = nextTasks.some(task => (
+        task.id === taskId
+        || (task.recurringTaskId === rule.id && taskDateKey(task) === dateISO)
+      ))
+      if (alreadyGenerated) return
+
+      nextTasks = [...nextTasks, createRecurringTaskInstance(rule, dateISO, nextTasks)]
+      changed = true
+    })
+  })
+
+  return { tasks: nextTasks, changed }
+}
+
+function recurringRuleSummary(rule) {
+  if (rule.type === 'monthly') {
+    return `毎月${rule.monthDay}日`
+  }
+
+  const labels = rule.weekdays
+    .map(weekday => WEEKDAY_OPTIONS.find(option => option.value === weekday)?.shortLabel)
+    .filter(Boolean)
+
+  return `毎週${labels.join('・') || '月'}`
+}
+
 function defaultEvents() {
   try {
     const raw = localStorage.getItem(EVENT_STORAGE_KEY)
@@ -1171,8 +1328,10 @@ function normalizeSupabaseJsonValue(value) {
   }
 }
 
-function plannerSettingsPayload() {
-  return {}
+function plannerSettingsPayload(settings = {}) {
+  return {
+    recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
+  }
 }
 
 function settingsToSupabaseRows(settings, previousRows = new Map(), timestamp = new Date().toISOString()) {
@@ -1188,9 +1347,9 @@ function settingsToSupabaseRows(settings, previousRows = new Map(), timestamp = 
 
 function settingsFromSupabaseRows(rows) {
   const row = rows.find(item => item.id === 'app') || rows[0]
-  if (!row) return {}
+  if (!row) return plannerSettingsPayload()
 
-  return normalizeSupabaseJsonValue(row.value ?? row.settings)
+  return plannerSettingsPayload(normalizeSupabaseJsonValue(row.value ?? row.settings))
 }
 
 async function loadPlannerDataFromSupabase() {
@@ -1213,6 +1372,7 @@ function plannerDataHasContent(data) {
   return data.events.length > 0
     || data.tasks.length > 0
     || Object.keys(data.memos).length > 0
+    || normalizeRecurringTaskRules(data.settings?.recurringTaskRules).length > 0
 }
 
 function comparableEvents(events) {
@@ -1249,8 +1409,11 @@ function comparableMemos(memos) {
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
 }
 
-function comparableSettings() {
-  return {}
+function comparableSettings(settings = {}) {
+  return {
+    recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+  }
 }
 
 function plannerDataSignature(data) {
@@ -1373,6 +1536,7 @@ export default function App() {
   const updateGoogleEventRef = useRef(null)
   const syncCurrentWeekWithGoogleRef = useRef(null)
   const isSyncingRef = useRef(false)
+  const recurringTaskRulesRef = useRef([])
   const initialPlannerDataRef = useRef(null)
   const supabaseReadyRef = useRef(false)
   const applyingSupabaseSnapshotRef = useRef(false)
@@ -1408,8 +1572,14 @@ export default function App() {
   const [events, setEvents] = useState(() => defaultEvents())
   const [tasks, setTasks] = useState(() => defaultTasks())
   const [memos, setMemos] = useState(() => defaultMemos())
+  const [recurringTaskRules, setRecurringTaskRules] = useState(() => defaultRecurringTaskRules())
   if (initialPlannerDataRef.current == null) {
-    initialPlannerDataRef.current = { events, tasks, memos }
+    initialPlannerDataRef.current = {
+      events,
+      tasks,
+      memos,
+      settings: plannerSettingsPayload({ recurringTaskRules })
+    }
   }
   const [, setUndoStack] = useState([])
   const [editing, setEditing] = useState(null)
@@ -1464,6 +1634,8 @@ export default function App() {
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
   const [mobileTaskDragState, setMobileTaskDragState] = useState(null)
+  const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
+  const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -1578,6 +1750,45 @@ export default function App() {
   }, [memos, supabaseConfigured])
 
   useEffect(() => {
+    recurringTaskRulesRef.current = recurringTaskRules
+    saveRecurringTaskRules(recurringTaskRules)
+
+    if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
+
+    lastLocalSupabaseChangeAtRef.current = Date.now()
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+
+    if (supabaseSaveTimersRef.current.settings) {
+      window.clearTimeout(supabaseSaveTimersRef.current.settings)
+    }
+
+    const snapshot = plannerSettingsPayload({ recurringTaskRules })
+    supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
+      void (async () => {
+        supabasePushInFlightRef.current += 1
+        try {
+          const timestamp = new Date().toISOString()
+          const rows = settingsToSupabaseRows(snapshot, supabaseRowsRef.current.settings, timestamp)
+          supabaseRowsRef.current.settings = await syncSupabaseRows(
+            'settings',
+            rows,
+            supabaseRowsRef.current.settings
+          )
+          setCloudStatus('connected')
+          setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+        } catch (error) {
+          console.error('Supabase settings sync failed', error)
+          setCloudStatus('error')
+          setCloudMessage('クラウド保存失敗')
+        } finally {
+          supabasePushInFlightRef.current -= 1
+        }
+      })()
+    }, SUPABASE_SAVE_DEBOUNCE_MS)
+  }, [recurringTaskRules, supabaseConfigured])
+
+  useEffect(() => {
     googleConnectedRef.current = googleConnected
     saveGoogleConnected(googleConnected)
   }, [googleConnected])
@@ -1612,9 +1823,11 @@ export default function App() {
           eventsRef.current = remoteData.events
           tasksRef.current = remoteData.tasks
           memosRef.current = remoteData.memos
+          recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
           setEvents(remoteData.events)
           setTasks(remoteData.tasks)
           setMemos(remoteData.memos)
+          setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
           setCloudStatus('connected')
           setCloudMessage(`クラウド読込済み ${formatClock(new Date())}`)
 
@@ -1627,7 +1840,7 @@ export default function App() {
 
         const initialLocalData = {
           ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
-          settings: plannerSettingsPayload()
+          settings: plannerSettingsPayload({ recurringTaskRules: recurringTaskRulesRef.current })
         }
         if (plannerDataHasContent(initialLocalData)) {
           setCloudStatus('saving')
@@ -1685,7 +1898,7 @@ export default function App() {
           events: eventsRef.current,
           tasks: tasksRef.current,
           memos: memosRef.current,
-          settings: plannerSettingsPayload()
+          settings: plannerSettingsPayload({ recurringTaskRules: recurringTaskRulesRef.current })
         }
 
         supabaseRowsRef.current = {
@@ -1702,9 +1915,11 @@ export default function App() {
         eventsRef.current = remoteData.events
         tasksRef.current = remoteData.tasks
         memosRef.current = remoteData.memos
+        recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
         setEvents(remoteData.events)
         setTasks(remoteData.tasks)
         setMemos(remoteData.memos)
+        setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
         setCloudStatus('connected')
         setCloudMessage(`クラウド更新 ${formatClock(new Date())}`)
 
@@ -1834,6 +2049,29 @@ export default function App() {
   const selectedMobileDate = currentDateISO
   const currentHour = now.getHours()
   const currentMinutes = now.getHours() * 60 + now.getMinutes()
+  const recurringTaskTargetDates = useMemo(() => (
+    Array.from(new Set([
+      currentDateISO,
+      selectedDashboardDate,
+      selectedMonthDate,
+      selectedMobileDate,
+      ...weekDates.map(day => formatISO(day))
+    ].filter(Boolean)))
+  ), [currentDateISO, selectedDashboardDate, selectedMobileDate, selectedMonthDate, weekDates])
+
+  useEffect(() => {
+    if (recurringTaskRules.length === 0 || recurringTaskTargetDates.length === 0) return undefined
+
+    const timerId = window.setTimeout(() => {
+      setTasks(prev => {
+        const result = generateRecurringTasksForDates(prev, recurringTaskRules, recurringTaskTargetDates)
+        return result.changed ? result.tasks : prev
+      })
+    }, 0)
+
+    return () => window.clearTimeout(timerId)
+  }, [recurringTaskRules, recurringTaskTargetDates])
+
   const selectedDashboardDateLabel = dateFromISO(selectedDashboardDate).toLocaleDateString('ja-JP', {
     year: 'numeric',
     month: 'long',
@@ -1865,10 +2103,7 @@ export default function App() {
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
   const mobileMemoText = memoText
   const mobileDragRange = mobileDragSelection
-    ? {
-        startMinutes: Math.min(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes),
-        endMinutes: Math.max(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
-      }
+    ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
     : null
   const mobileDragPreviewStyle = mobileDragSelection
     ? {
@@ -2715,6 +2950,58 @@ export default function App() {
     updateTaskDraft(dateISO, '')
   }
 
+  function openRecurringTaskModal() {
+    setRecurringTaskDraft(createRecurringTaskDraft())
+    setIsRecurringTaskModalOpen(true)
+  }
+
+  function closeRecurringTaskModal() {
+    setIsRecurringTaskModalOpen(false)
+    setRecurringTaskDraft(createRecurringTaskDraft())
+  }
+
+  function updateRecurringTaskDraft(field, value) {
+    setRecurringTaskDraft(prev => ({ ...prev, [field]: value }))
+  }
+
+  function toggleRecurringDraftWeekday(weekday) {
+    setRecurringTaskDraft(prev => {
+      if (prev.weekdays.length === 1 && prev.weekdays.includes(weekday)) return prev
+
+      const weekdays = prev.weekdays.includes(weekday)
+        ? prev.weekdays.filter(value => value !== weekday)
+        : [...prev.weekdays, weekday]
+
+      return {
+        ...prev,
+        weekdays: normalizeWeekdays(weekdays)
+      }
+    })
+  }
+
+  function saveRecurringTaskRule(e) {
+    e.preventDefault()
+    const title = recurringTaskDraft.title.trim()
+    if (!title) return
+
+    const timestamp = new Date().toISOString()
+    const rule = normalizeRecurringTaskRule({
+      ...recurringTaskDraft,
+      id: createLocalId('recurring-task'),
+      title,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    })
+    if (!rule) return
+
+    setRecurringTaskRules(prev => normalizeRecurringTaskRules([...prev, rule]))
+    setRecurringTaskDraft(createRecurringTaskDraft())
+  }
+
+  function deleteRecurringTaskRule(ruleId) {
+    setRecurringTaskRules(prev => prev.filter(rule => rule.id !== ruleId))
+  }
+
   function setActiveDraggedTask(taskId) {
     draggedTaskIdRef.current = taskId
     setDraggedTaskId(taskId)
@@ -3092,7 +3379,7 @@ export default function App() {
         mobileTaskSuppressClickRef.current = true
         window.setTimeout(() => {
           mobileTaskSuppressClickRef.current = false
-        }, 0)
+        }, 350)
       }
 
       cleanupMobileTaskDrag()
@@ -3740,6 +4027,11 @@ export default function App() {
                       mobileTaskDragState?.taskId === task.id && mobileTaskDragState?.dragging ? 'dragging' : '',
                       mobileTaskDragState?.beforeTaskId === task.id && mobileTaskDragState?.taskId !== task.id ? 'drag-over-before' : ''
                     ].filter(Boolean).join(' ')}
+                    style={
+                      mobileTaskDragState?.taskId === task.id && mobileTaskDragState?.dragging
+                        ? { '--drag-offset-y': `${mobileTaskDragState.currentY - mobileTaskDragState.startY}px` }
+                        : undefined
+                    }
                     data-mobile-task-id={task.id}
                     onPointerDown={e => startMobileTaskReorder(e, task.id)}
                     onClickCapture={suppressMobileTaskClickAfterDrag}
@@ -3873,7 +4165,16 @@ export default function App() {
             onDragOver={allowTaskDrop}
             onDrop={e => moveTaskToDate(e, UNDATED_TASK_DATE)}
           >
-            <div className="tasks-label">無制限タスク</div>
+            <div className="tasks-panel-head">
+              <div className="tasks-label">無制限タスク</div>
+              <button
+                type="button"
+                className="recurring-task-settings-button"
+                onClick={openRecurringTaskModal}
+              >
+                繰り返しタスク設定
+              </button>
+            </div>
             <div className="tasks-list">
               {undatedTasks().length === 0 && <div className="no-tasks">タスクなし</div>}
               {undatedTasks().map(task => (
@@ -4482,6 +4783,104 @@ export default function App() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {isRecurringTaskModalOpen && (
+        <div className="recurring-task-modal-backdrop" role="presentation" onClick={closeRecurringTaskModal}>
+          <div
+            className="recurring-task-modal"
+            onClick={e => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recurring-task-modal-title"
+          >
+            <div className="recurring-task-modal-header">
+              <h3 id="recurring-task-modal-title">繰り返しタスク設定</h3>
+              <button type="button" onClick={closeRecurringTaskModal} aria-label="閉じる">×</button>
+            </div>
+
+            <form className="recurring-task-form" onSubmit={saveRecurringTaskRule}>
+              <label className="recurring-task-field">
+                <span>タスクタイトル</span>
+                <input
+                  type="text"
+                  value={recurringTaskDraft.title}
+                  onChange={e => updateRecurringTaskDraft('title', e.target.value)}
+                  placeholder="例：燃えるゴミ"
+                  autoCorrect="off"
+                  autoCapitalize="off"
+                  spellCheck={false}
+                />
+              </label>
+
+              <label className="recurring-task-field">
+                <span>繰り返しタイプ</span>
+                <select
+                  value={recurringTaskDraft.type}
+                  onChange={e => updateRecurringTaskDraft('type', e.target.value)}
+                >
+                  <option value="weekly">毎週</option>
+                  <option value="monthly">毎月</option>
+                </select>
+              </label>
+
+              {recurringTaskDraft.type === 'weekly' ? (
+                <fieldset className="recurring-task-weekdays">
+                  <legend>作成する曜日</legend>
+                  <div>
+                    {WEEKDAY_OPTIONS.map(option => (
+                      <label key={option.value}>
+                        <input
+                          type="checkbox"
+                          checked={recurringTaskDraft.weekdays.includes(option.value)}
+                          onChange={() => toggleRecurringDraftWeekday(option.value)}
+                        />
+                        <span>{option.shortLabel}</span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : (
+                <label className="recurring-task-field">
+                  <span>毎月何日</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="31"
+                    value={recurringTaskDraft.monthDay}
+                    onChange={e => updateRecurringTaskDraft('monthDay', normalizeMonthDay(e.target.value))}
+                  />
+                </label>
+              )}
+
+              <div className="recurring-task-actions">
+                <button type="button" className="cancel" onClick={closeRecurringTaskModal}>キャンセル</button>
+                <button type="submit" className="save">保存</button>
+              </div>
+            </form>
+
+            <section className="recurring-task-rules" aria-label="登録済みの繰り返しタスク">
+              <h4>登録済み</h4>
+              {recurringTaskRules.length === 0 ? (
+                <p>まだ設定はありません</p>
+              ) : (
+                <ul>
+                  {recurringTaskRules.map(rule => (
+                    <li key={rule.id}>
+                      <div>
+                        <strong>{rule.title}</strong>
+                        <span>{recurringRuleSummary(rule)}</span>
+                      </div>
+                      <button type="button" onClick={() => deleteRecurringTaskRule(rule.id)}>
+                        削除
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
         </div>
       )}
 
