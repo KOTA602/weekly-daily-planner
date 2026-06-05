@@ -2156,7 +2156,7 @@
   right: 0;
   top: 0;
   height: 1px;
-  background: rgba(30, 58, 138, 0.42);
+  background: rgba(15, 23, 42, 0.08);
   z-index: 25;
 }
 .mobile-current-time-pointer {
@@ -2373,6 +2373,9 @@
 }
 .mobile-event-card {
   position: absolute;
+  --mobile-event-separator-color: #1e3a8a;
+  --mobile-event-top-separator: inset 0 1px 0 var(--mobile-event-separator-color);
+  --mobile-event-bottom-separator: inset 0 -1px 0 var(--mobile-event-separator-color);
   left: 0;
   right: 8px;
   display: flex;
@@ -2381,7 +2384,7 @@
   border: none;
   border-radius: 0;
   background: rgba(219, 234, 254, 0.28);
-  box-shadow: none;
+  box-shadow: var(--mobile-event-top-separator), var(--mobile-event-bottom-separator);
   box-sizing: border-box;
   color: #1e3a8a;
   cursor: pointer;
@@ -2390,6 +2393,9 @@
   padding: 4px 10px;
   text-align: center;
   pointer-events: auto;
+}
+.mobile-event-card.connected-top {
+  --mobile-event-top-separator: inset 0 0 0 transparent;
 }
 .mobile-event-card.current-event {
   background: rgba(255, 237, 213, 0.36);

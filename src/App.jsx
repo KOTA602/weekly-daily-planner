@@ -3819,18 +3819,29 @@ export default function App() {
               )}
 
               <div className="mobile-event-layer">
-                {selectedMobileEvents.map(event => (
-                  <button
-                    key={event.id}
-                    type="button"
-                    className={`mobile-event-card mobile-event-block ${isEventInProgress(event) ? 'current-event' : ''}`}
-                    style={mobileEventBlockStyle(event)}
-                    onClick={() => openMobileEventModal(event)}
-                    aria-label={`${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`}
-                  >
-                    <span className="mobile-event-title">{event.title || '無題の予定'}</span>
-                  </button>
-                ))}
+                {selectedMobileEvents.map((event, index) => {
+                  const previousEvent = selectedMobileEvents[index - 1]
+                  const isConnectedTop = previousEvent?.endTime === event.startTime
+                  const className = [
+                    'mobile-event-card',
+                    'mobile-event-block',
+                    isEventInProgress(event) ? 'current-event' : '',
+                    isConnectedTop ? 'connected-top' : ''
+                  ].filter(Boolean).join(' ')
+
+                  return (
+                    <button
+                      key={event.id}
+                      type="button"
+                      className={className}
+                      style={mobileEventBlockStyle(event)}
+                      onClick={() => openMobileEventModal(event)}
+                      aria-label={`${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`}
+                    >
+                      <span className="mobile-event-title">{event.title || '無題の予定'}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           </section>
