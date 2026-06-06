@@ -1763,6 +1763,10 @@ export default function App() {
   const plannerTimetableRef = useRef(null)
   const pcNoteInputRef = useRef(null)
   const pcNoteEditInputRef = useRef(null)
+  const pcNotePaletteRef = useRef(null)
+  const pcNoteEditPaletteRef = useRef(null)
+  const pcNoteModalRef = useRef(null)
+  const suppressPcNoteBackdropSaveRef = useRef(false)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -2278,6 +2282,26 @@ export default function App() {
 
     return () => window.cancelAnimationFrame(animationId)
   }, [editingPcNoteId])
+
+  useEffect(() => {
+    if (!isNoteColorPaletteOpen && !isEditNoteColorPaletteOpen) return undefined
+
+    function handlePaletteOutsidePointerDown(e) {
+      if (isNoteColorPaletteOpen && !pcNotePaletteRef.current?.contains(e.target)) {
+        setIsNoteColorPaletteOpen(false)
+      }
+
+      if (isEditNoteColorPaletteOpen && !pcNoteEditPaletteRef.current?.contains(e.target)) {
+        if (!pcNoteModalRef.current?.contains(e.target)) {
+          suppressPcNoteBackdropSaveRef.current = true
+        }
+        setIsEditNoteColorPaletteOpen(false)
+      }
+    }
+
+    document.addEventListener('pointerdown', handlePaletteOutsidePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handlePaletteOutsidePointerDown, true)
+  }, [isNoteColorPaletteOpen, isEditNoteColorPaletteOpen])
 
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
@@ -3462,6 +3486,7 @@ export default function App() {
     setPcNoteEditMode('pc')
     setPcNoteEditDraft(createPcNoteDraft())
     setIsEditNoteColorPaletteOpen(false)
+    suppressPcNoteBackdropSaveRef.current = false
   }
 
   function savePcNoteDraft() {
@@ -3523,6 +3548,15 @@ export default function App() {
     if (e.isComposing || e.nativeEvent?.isComposing || e.keyCode === 229) return
 
     e.preventDefault()
+    savePcNoteEditDraft()
+  }
+
+  function handlePcNoteBackdropClick() {
+    if (suppressPcNoteBackdropSaveRef.current) {
+      suppressPcNoteBackdropSaveRef.current = false
+      return
+    }
+
     savePcNoteEditDraft()
   }
 
@@ -4237,7 +4271,7 @@ export default function App() {
               placeholder={inputPlaceholder}
             />
             <div className="pc-note-composer-actions">
-              <div className="pc-note-color-area">
+              <div className="pc-note-color-area" ref={pcNotePaletteRef}>
                 <button
                   type="button"
                   className="pc-note-palette-button"
@@ -4264,7 +4298,10 @@ export default function App() {
                         key={option.id}
                         className={normalizeNoteColor(pcNoteDraft.color) === option.color ? 'selected' : ''}
                         style={{ '--swatch-color': option.color }}
-                        onClick={() => setPcNoteDraft(prev => ({ ...prev, color: option.color }))}
+                        onClick={() => {
+                          setPcNoteDraft(prev => ({ ...prev, color: option.color }))
+                          setIsNoteColorPaletteOpen(false)
+                        }}
                         aria-label={option.label}
                         title={option.label}
                       />
@@ -5309,10 +5346,11 @@ export default function App() {
       )}
 
       {editingPcNoteId && (
-        <div className="pc-note-modal-backdrop" role="presentation" onClick={savePcNoteEditDraft}>
+        <div className="pc-note-modal-backdrop" role="presentation" onClick={handlePcNoteBackdropClick}>
           <section
             className="pc-note-edit-modal"
             style={noteColorStyle(pcNoteEditDraft.color)}
+            ref={pcNoteModalRef}
             onClick={e => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -5328,7 +5366,7 @@ export default function App() {
               placeholder="メモを入力..."
             />
             <div className="pc-note-composer-actions pc-note-edit-actions">
-              <div className="pc-note-color-area">
+              <div className="pc-note-color-area" ref={pcNoteEditPaletteRef}>
                 <button
                   type="button"
                   className="pc-note-palette-button"
@@ -5346,7 +5384,10 @@ export default function App() {
                         key={option.id}
                         className={normalizeNoteColor(pcNoteEditDraft.color) === option.color ? 'selected' : ''}
                         style={{ '--swatch-color': option.color }}
-                        onClick={() => setPcNoteEditDraft(prev => ({ ...prev, color: option.color }))}
+                        onClick={() => {
+                          setPcNoteEditDraft(prev => ({ ...prev, color: option.color }))
+                          setIsEditNoteColorPaletteOpen(false)
+                        }}
                         aria-label={option.label}
                         title={option.label}
                       />
