@@ -1475,6 +1475,8 @@
 }
 .pc-note-content-input {
   min-height: 72px;
+  max-height: 46vh;
+  overflow-y: hidden;
   resize: vertical;
   font-size: 15px;
   line-height: 1.55;
@@ -1719,7 +1721,7 @@
   --note-fg: #0f172a;
   --note-muted: #334155;
   width: min(660px, calc(100vw - 32px));
-  max-height: min(84vh, 820px);
+  max-height: min(88vh, 860px);
   display: flex;
   flex-direction: column;
   border: 1px solid rgba(15, 23, 42, 0.16);
@@ -1731,8 +1733,8 @@
   overflow: hidden;
 }
 .pc-note-edit-modal .pc-note-content-input {
-  min-height: min(58vh, 520px);
-  max-height: calc(84vh - 74px);
+  min-height: min(70vh, 620px);
+  max-height: calc(88vh - 76px);
   overflow-y: auto;
   resize: vertical;
 }
@@ -3089,6 +3091,7 @@
 }
 .mobile-memo-page .pc-note-content-input {
   min-height: 66px;
+  max-height: 42svh;
   font-size: 16px;
 }
 .mobile-memo-page .pc-note-color-panel {
@@ -3597,11 +3600,11 @@
   }
   .pc-note-edit-modal {
     width: 92vw;
-    max-height: 82svh;
+    max-height: 86svh;
   }
   .pc-note-edit-modal .pc-note-content-input {
-    min-height: min(52svh, 460px);
-    max-height: calc(82svh - 78px);
+    min-height: min(64svh, 560px);
+    max-height: calc(86svh - 78px);
   }
   .mobile-timeline {
     overflow: visible;

@@ -1858,6 +1858,25 @@ export default function App() {
   const [draftEventStart, setDraftEventStart] = useState('09:00')
   const [draftEventEnd, setDraftEventEnd] = useState('10:00')
 
+  function resizeNoteTextarea(textarea) {
+    if (!textarea) return
+
+    const computedStyle = window.getComputedStyle(textarea)
+    const minHeight = Number.parseFloat(computedStyle.minHeight) || 0
+    const maxHeight = Number.parseFloat(computedStyle.maxHeight)
+    textarea.style.height = 'auto'
+
+    const nextHeight = Math.max(minHeight, textarea.scrollHeight)
+    if (Number.isFinite(maxHeight) && maxHeight > 0 && nextHeight > maxHeight) {
+      textarea.style.height = `${maxHeight}px`
+      textarea.style.overflowY = 'auto'
+      return
+    }
+
+    textarea.style.height = `${nextHeight}px`
+    textarea.style.overflowY = 'hidden'
+  }
+
   useEffect(() => {
     eventsRef.current = events
     saveEvents(events)
@@ -2282,6 +2301,26 @@ export default function App() {
 
     return () => window.cancelAnimationFrame(animationId)
   }, [editingPcNoteId])
+
+  useEffect(() => {
+    if (isNoteSearchMode) return undefined
+
+    const animationId = window.requestAnimationFrame(() => {
+      resizeNoteTextarea(pcNoteInputRef.current)
+    })
+
+    return () => window.cancelAnimationFrame(animationId)
+  }, [currentView, isNoteSearchMode, mobileActivePage, pcNoteDraft.content])
+
+  useEffect(() => {
+    if (!editingPcNoteId) return undefined
+
+    const animationId = window.requestAnimationFrame(() => {
+      resizeNoteTextarea(pcNoteEditInputRef.current)
+    })
+
+    return () => window.cancelAnimationFrame(animationId)
+  }, [editingPcNoteId, pcNoteEditDraft.content])
 
   useEffect(() => {
     if (!isNoteColorPaletteOpen && !isEditNoteColorPaletteOpen) return undefined
