@@ -1209,7 +1209,6 @@ function normalizePcNotes(notes) {
   return notes
     .map(normalizePcNote)
     .filter(Boolean)
-    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
 }
 
 function defaultPcNotes() {
@@ -4276,6 +4275,14 @@ export default function App() {
   }
 
   function cleanupMobileEventDrag() {
+    const state = mobileEventDragStateRef.current
+    if (state?.target?.hasPointerCapture?.(state.pointerId)) {
+      try {
+        state.target.releasePointerCapture(state.pointerId)
+      } catch {
+        // Pointer capture can already be cleared when the browser ends the gesture.
+      }
+    }
     clearMobileEventLongPressTimer()
     clearMobileEventDragDocumentListeners()
     unlockMobileDragScroll()
@@ -4426,10 +4433,12 @@ export default function App() {
       const sourceEvent = eventsRef.current.find(item => item.id === state.eventId)
 
       if (range && sourceEvent) {
+        const timestamp = new Date().toISOString()
         const nextEvent = {
           ...sourceEvent,
           startTime: minutesToTime(range.startMinutes),
-          endTime: minutesToTime(range.endMinutes)
+          endTime: minutesToTime(range.endMinutes),
+          updatedAt: timestamp
         }
 
         if (nextEvent.startTime !== sourceEvent.startTime || nextEvent.endTime !== sourceEvent.endTime) {
