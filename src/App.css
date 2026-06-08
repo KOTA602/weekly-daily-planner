@@ -1644,6 +1644,7 @@
   --note-bg: #fff;
   --note-fg: #0f172a;
   --note-muted: #334155;
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1654,7 +1655,7 @@
   box-sizing: border-box;
   color: var(--note-fg);
   cursor: pointer;
-  padding: 14px;
+  padding: 14px 14px 44px;
   transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
 .pc-note-card:hover {
@@ -1686,24 +1687,107 @@
   line-height: 1.55;
 }
 .pc-note-card-actions {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 6px;
   display: flex;
-  justify-content: flex-end;
-  margin-top: 4px;
+  align-items: center;
+  justify-content: space-between;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
 }
-.pc-note-card-actions button {
-  min-height: 30px;
+.pc-note-card:hover .pc-note-card-actions,
+.pc-note-card:focus-within .pc-note-card-actions,
+.pc-note-card.has-card-tools-open .pc-note-card-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.pc-note-card-tool-area,
+.pc-note-card-menu-area {
+  position: relative;
+}
+.pc-note-card-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: none;
-  border-radius: 6px;
+  border-radius: 999px;
   background: transparent;
   color: var(--note-muted);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 800;
-  padding: 0 8px;
+  padding: 0;
 }
-.pc-note-card-actions button:hover {
-  background: rgba(225, 29, 72, 0.12);
+.pc-note-card-icon-button:hover {
+  background: rgba(15, 23, 42, 0.08);
+  color: var(--note-fg);
+}
+.pc-note-card-icon-button .pc-note-palette-icon {
+  width: 19px;
+  height: 18px;
+  border-width: 2px;
+}
+.pc-note-kebab-icon,
+.pc-note-kebab-icon::before,
+.pc-note-kebab-icon::after {
+  display: block;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.pc-note-kebab-icon {
+  position: relative;
+}
+.pc-note-kebab-icon::before,
+.pc-note-kebab-icon::after {
+  position: absolute;
+  left: 0;
+  content: "";
+}
+.pc-note-kebab-icon::before {
+  top: -7px;
+}
+.pc-note-kebab-icon::after {
+  top: 7px;
+}
+.pc-note-card-color-panel {
+  left: 0;
+  bottom: calc(100% + 7px);
+  z-index: 90;
+}
+.pc-note-card-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  z-index: 90;
+  min-width: 132px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  padding: 6px;
+}
+.pc-note-card-menu button {
+  display: block;
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
   color: #be123c;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 0 10px;
+  text-align: left;
+  white-space: nowrap;
+}
+.pc-note-card-menu button:hover {
+  background: rgba(225, 29, 72, 0.1);
 }
 .pc-note-modal-backdrop {
   position: fixed;
@@ -2473,6 +2557,9 @@
 .mobile-timeline.creating {
   touch-action: none;
 }
+.mobile-timeline.event-dragging {
+  touch-action: none;
+}
 .mobile-timeline-grid,
 .mobile-event-layer {
   position: absolute;
@@ -2936,6 +3023,10 @@
   padding: 4px 10px;
   text-align: center;
   pointer-events: auto;
+  touch-action: pan-y;
+  transform-origin: center;
+  transition: box-shadow 0.15s ease, opacity 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  -webkit-tap-highlight-color: transparent;
 }
 .mobile-event-card.connected-top {
   border-top-color: rgba(30, 58, 138, 0.14);
@@ -2944,6 +3035,49 @@
   --mobile-event-border-color: rgba(234, 88, 12, 0.34);
   background: rgba(255, 237, 213, 0.36);
   color: #9a3412;
+}
+.mobile-event-card.dragging {
+  z-index: 70;
+  border-color: rgba(37, 99, 235, 0.5);
+  box-shadow: 0 16px 32px rgba(30, 58, 138, 0.22), 0 4px 10px rgba(30, 58, 138, 0.14);
+  opacity: 0.96;
+  transform: scale(1.03);
+  touch-action: none;
+}
+.mobile-event-resize-handle {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  height: 16px;
+  z-index: 2;
+  pointer-events: none;
+}
+.mobile-event-resize-handle.top {
+  top: 0;
+}
+.mobile-event-resize-handle.bottom {
+  bottom: 0;
+}
+.mobile-event-resize-handle::after {
+  position: absolute;
+  left: 50%;
+  width: 24px;
+  height: 2px;
+  border-radius: 999px;
+  background: rgba(30, 58, 138, 0.2);
+  content: "";
+  opacity: 0;
+  transform: translateX(-50%);
+}
+.mobile-event-resize-handle.top::after {
+  top: 4px;
+}
+.mobile-event-resize-handle.bottom::after {
+  bottom: 4px;
+}
+.mobile-event-card.dragging .mobile-event-resize-handle::after,
+.mobile-event-card:active .mobile-event-resize-handle::after {
+  opacity: 1;
 }
 .mobile-event-title {
   position: relative;
@@ -3113,7 +3247,23 @@
   border-color: rgba(15, 23, 42, 0.14);
   border-radius: 10px;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
-  padding: 12px;
+  padding: 12px 12px 42px;
+}
+.mobile-memo-page .pc-note-card-actions {
+  opacity: 0.72;
+  pointer-events: auto;
+}
+.mobile-memo-page .pc-note-card:focus-within .pc-note-card-actions,
+.mobile-memo-page .pc-note-card.has-card-tools-open .pc-note-card-actions {
+  opacity: 1;
+}
+.mobile-memo-page .pc-note-card-icon-button {
+  width: 28px;
+  height: 28px;
+}
+.mobile-memo-page .pc-note-card-menu {
+  right: -2px;
+  min-width: 124px;
 }
 .mobile-memo-page .pc-note-card h2 {
   font-size: 14px;

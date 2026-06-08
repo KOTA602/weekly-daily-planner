@@ -196,6 +196,7 @@ const START_TIME_OPTIONS = TIME_OPTIONS.slice(0, -1)
 const GOOGLE_AUTO_SYNC_INTERVAL_MS = 60 * 1000
 const MOBILE_LONG_PRESS_MS = 400
 const MOBILE_LONG_PRESS_MOVE_CANCEL_PX = 10
+const MOBILE_EVENT_RESIZE_HANDLE_PX = 18
 const MOBILE_TASK_LONG_PRESS_MS = 400
 const MOBILE_TASK_MOVE_CANCEL_PX = 10
 
@@ -343,6 +344,13 @@ function mobileEventBlockStyle(event) {
   const startMinutes = minutesFromTime(normalizedEvent.startTime)
   const endMinutes = minutesFromTime(normalizedEvent.endTime)
 
+  return {
+    top: `${mobileTimelineYForMinutes(startMinutes)}px`,
+    height: `${mobileTimelineHeightFromMinutes(startMinutes, endMinutes)}px`
+  }
+}
+
+function mobileEventRangeStyle(startMinutes, endMinutes) {
   return {
     top: `${mobileTimelineYForMinutes(startMinutes)}px`,
     height: `${mobileTimelineHeightFromMinutes(startMinutes, endMinutes)}px`
@@ -1753,6 +1761,10 @@ export default function App() {
   const mobileDragModeRef = useRef('idle')
   const mobileDragListenersCleanupRef = useRef(null)
   const mobileDragScrollLockRef = useRef(null)
+  const mobileEventLongPressTimerRef = useRef(null)
+  const mobileEventDragStateRef = useRef(null)
+  const mobileEventDragListenersCleanupRef = useRef(null)
+  const mobileEventSuppressClickRef = useRef(false)
   const mobileScheduleSectionRef = useRef(null)
   const mobileScheduleAutoScrollKeyRef = useRef('')
   const mobileTaskListRef = useRef(null)
@@ -1839,6 +1851,7 @@ export default function App() {
   const [mobileActivePage, setMobileActivePage] = useState('events')
   const [mobileTaskDraft, setMobileTaskDraft] = useState('')
   const [mobileDragSelection, setMobileDragSelection] = useState(null)
+  const [mobileEventDragState, setMobileEventDragState] = useState(null)
   const [mobileTaskDragState, setMobileTaskDragState] = useState(null)
   const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
@@ -1850,6 +1863,8 @@ export default function App() {
   const [pcNoteEditDraft, setPcNoteEditDraft] = useState(() => createPcNoteDraft())
   const [isNoteColorPaletteOpen, setIsNoteColorPaletteOpen] = useState(false)
   const [isEditNoteColorPaletteOpen, setIsEditNoteColorPaletteOpen] = useState(false)
+  const [openNoteCardPaletteId, setOpenNoteCardPaletteId] = useState(null)
+  const [openNoteCardMenuId, setOpenNoteCardMenuId] = useState(null)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -2342,14 +2357,32 @@ export default function App() {
     return () => document.removeEventListener('pointerdown', handlePaletteOutsidePointerDown, true)
   }, [isNoteColorPaletteOpen, isEditNoteColorPaletteOpen])
 
+  useEffect(() => {
+    if (!openNoteCardPaletteId && !openNoteCardMenuId) return undefined
+
+    function handleNoteCardControlsOutsidePointerDown(e) {
+      if (e.target.closest?.('.pc-note-card-control-zone')) return
+
+      setOpenNoteCardPaletteId(null)
+      setOpenNoteCardMenuId(null)
+    }
+
+    document.addEventListener('pointerdown', handleNoteCardControlsOutsidePointerDown, true)
+    return () => document.removeEventListener('pointerdown', handleNoteCardControlsOutsidePointerDown, true)
+  }, [openNoteCardPaletteId, openNoteCardMenuId])
+
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
       window.clearTimeout(mobileLongPressTimerRef.current)
+    }
+    if (mobileEventLongPressTimerRef.current) {
+      window.clearTimeout(mobileEventLongPressTimerRef.current)
     }
     if (mobileTaskLongPressTimerRef.current) {
       window.clearTimeout(mobileTaskLongPressTimerRef.current)
     }
     mobileDragListenersCleanupRef.current?.()
+    mobileEventDragListenersCleanupRef.current?.()
     mobileTaskDragListenersCleanupRef.current?.()
   }, [])
 
@@ -3613,9 +3646,35 @@ export default function App() {
 
   function deletePcNote(id) {
     setPcNotes(prev => prev.filter(note => note.id !== id))
+    setOpenNoteCardPaletteId(prev => (prev === id ? null : prev))
+    setOpenNoteCardMenuId(prev => (prev === id ? null : prev))
     if (editingPcNoteId === id) {
       closePcNoteEditor()
     }
+  }
+
+  function updatePcNoteCardColor(id, color) {
+    const normalizedColor = normalizeNoteColor(color)
+    const timestamp = new Date().toISOString()
+
+    setPcNotes(prev => normalizePcNotes(prev.map(note => (
+      note.id === id
+        ? { ...note, color: normalizedColor, updatedAt: timestamp }
+        : note
+    ))))
+    setOpenNoteCardPaletteId(null)
+  }
+
+  function toggleNoteCardPalette(e, id) {
+    e.stopPropagation()
+    setOpenNoteCardMenuId(null)
+    setOpenNoteCardPaletteId(prev => (prev === id ? null : id))
+  }
+
+  function toggleNoteCardMenu(e, id) {
+    e.stopPropagation()
+    setOpenNoteCardPaletteId(null)
+    setOpenNoteCardMenuId(prev => (prev === id ? null : id))
   }
 
   function changeDashboardMonth(offset) {
@@ -4204,6 +4263,219 @@ export default function App() {
     resetMobileDragCreate()
   }
 
+  function clearMobileEventLongPressTimer() {
+    if (!mobileEventLongPressTimerRef.current) return
+
+    window.clearTimeout(mobileEventLongPressTimerRef.current)
+    mobileEventLongPressTimerRef.current = null
+  }
+
+  function clearMobileEventDragDocumentListeners() {
+    mobileEventDragListenersCleanupRef.current?.()
+    mobileEventDragListenersCleanupRef.current = null
+  }
+
+  function cleanupMobileEventDrag() {
+    clearMobileEventLongPressTimer()
+    clearMobileEventDragDocumentListeners()
+    unlockMobileDragScroll()
+    mobileEventDragStateRef.current = null
+    setMobileEventDragState(null)
+  }
+
+  function mobileEventInteractionModeFromPointer(e) {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const localY = e.clientY - rect.top
+    const handleSize = Math.min(
+      MOBILE_EVENT_RESIZE_HANDLE_PX,
+      Math.max(12, rect.height * 0.28)
+    )
+
+    if (localY <= handleSize) return 'resize-start'
+    if (rect.height - localY <= handleSize) return 'resize-end'
+    return 'move'
+  }
+
+  function mobileEventRangeFromDragState(state, clientY = state?.currentY) {
+    if (!state) return null
+
+    const deltaPixels = clientY - state.startY
+    const deltaMinutes = Math.round((deltaPixels / MOBILE_HOUR_HEIGHT * 60) / STEP_MINUTES) * STEP_MINUTES
+    const initialStart = state.initialStart
+    const initialEnd = state.initialEnd
+    const initialDuration = Math.max(STEP_MINUTES, initialEnd - initialStart)
+    let startMinutes = initialStart
+    let endMinutes = initialEnd
+
+    if (state.mode === 'move') {
+      startMinutes = clamp(
+        initialStart + deltaMinutes,
+        GRID_START_MINUTES,
+        GRID_END_MINUTES - initialDuration
+      )
+      endMinutes = startMinutes + initialDuration
+    } else if (state.mode === 'resize-start') {
+      startMinutes = clamp(
+        initialStart + deltaMinutes,
+        GRID_START_MINUTES,
+        initialEnd - STEP_MINUTES
+      )
+    } else if (state.mode === 'resize-end') {
+      endMinutes = clamp(
+        initialEnd + deltaMinutes,
+        initialStart + STEP_MINUTES,
+        GRID_END_MINUTES
+      )
+    }
+
+    const snappedStart = clampGridMinutes(startMinutes, GRID_START_MINUTES, GRID_END_MINUTES - STEP_MINUTES)
+    const snappedEnd = clampGridMinutes(endMinutes, snappedStart + STEP_MINUTES, GRID_END_MINUTES)
+
+    return {
+      startMinutes: snappedStart,
+      endMinutes: snappedEnd
+    }
+  }
+
+  function mobileEventStyleForRender(event) {
+    const activeState = mobileEventDragState
+    if (activeState?.dragging && activeState.eventId === event.id) {
+      const range = mobileEventRangeFromDragState(activeState)
+      if (range) return mobileEventRangeStyle(range.startMinutes, range.endMinutes)
+    }
+
+    return mobileEventBlockStyle(event)
+  }
+
+  function startMobileEventBlockInteraction(e, event) {
+    if (e.isPrimary === false) return
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    if (e.target.closest('input, select, textarea')) return
+
+    e.stopPropagation()
+    window.getSelection?.().removeAllRanges?.()
+
+    const normalizedEvent = normalizePlannerEvent(event)
+    const initialStart = minutesFromTime(normalizedEvent.startTime)
+    const initialEnd = minutesFromTime(normalizedEvent.endTime)
+    const startState = {
+      eventId: normalizedEvent.id,
+      pointerId: e.pointerId,
+      mode: mobileEventInteractionModeFromPointer(e),
+      startX: e.clientX,
+      startY: e.clientY,
+      currentY: e.clientY,
+      initialStart,
+      initialEnd,
+      dragging: false,
+      target: e.currentTarget
+    }
+
+    cleanupMobileEventDrag()
+    mobileEventDragStateRef.current = startState
+
+    const activateDrag = () => {
+      const activeState = mobileEventDragStateRef.current
+      if (!activeState || activeState.eventId !== normalizedEvent.id) return
+
+      window.getSelection?.().removeAllRanges?.()
+      const nextState = { ...activeState, dragging: true }
+      mobileEventDragStateRef.current = nextState
+      setMobileEventDragState(nextState)
+      lockMobileDragScroll()
+
+      try {
+        activeState.target?.setPointerCapture?.(activeState.pointerId)
+      } catch {
+        // Some mobile browsers do not allow capture after the long-press threshold.
+      }
+    }
+
+    function handlePointerMove(moveEvent) {
+      const state = mobileEventDragStateRef.current
+      if (!state || moveEvent.pointerId !== state.pointerId) return
+
+      const distance = Math.hypot(moveEvent.clientX - state.startX, moveEvent.clientY - state.startY)
+      if (!state.dragging) {
+        if (distance > MOBILE_LONG_PRESS_MOVE_CANCEL_PX) {
+          cleanupMobileEventDrag()
+        }
+        return
+      }
+
+      preventMobileGestureDefault(moveEvent)
+      const nextState = {
+        ...state,
+        currentY: moveEvent.clientY
+      }
+      mobileEventDragStateRef.current = nextState
+      setMobileEventDragState(nextState)
+    }
+
+    function handlePointerUp(upEvent) {
+      const state = mobileEventDragStateRef.current
+      if (!state || upEvent.pointerId !== state.pointerId) return
+
+      if (!state.dragging) {
+        cleanupMobileEventDrag()
+        return
+      }
+
+      preventMobileGestureDefault(upEvent)
+      const range = mobileEventRangeFromDragState(state, upEvent.clientY)
+      const sourceEvent = eventsRef.current.find(item => item.id === state.eventId)
+
+      if (range && sourceEvent) {
+        const nextEvent = {
+          ...sourceEvent,
+          startTime: minutesToTime(range.startMinutes),
+          endTime: minutesToTime(range.endMinutes)
+        }
+
+        if (nextEvent.startTime !== sourceEvent.startTime || nextEvent.endTime !== sourceEvent.endTime) {
+          saveUndoSnapshot()
+          setEvents(prev => prev.map(item => (item.id === state.eventId ? nextEvent : item)))
+          if (nextEvent.googleEventId) {
+            void updateGoogleEventRef.current?.(nextEvent)
+          }
+        }
+      }
+
+      mobileEventSuppressClickRef.current = true
+      window.setTimeout(() => {
+        mobileEventSuppressClickRef.current = false
+      }, 350)
+      cleanupMobileEventDrag()
+    }
+
+    function handlePointerCancel(cancelEvent) {
+      const state = mobileEventDragStateRef.current
+      if (!state || cancelEvent.pointerId !== state.pointerId) return
+      cleanupMobileEventDrag()
+    }
+
+    window.addEventListener('pointermove', handlePointerMove, { passive: false })
+    window.addEventListener('pointerup', handlePointerUp, { passive: false })
+    window.addEventListener('pointercancel', handlePointerCancel)
+    mobileEventDragListenersCleanupRef.current = () => {
+      window.removeEventListener('pointermove', handlePointerMove)
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+    }
+
+    mobileEventLongPressTimerRef.current = window.setTimeout(activateDrag, MOBILE_LONG_PRESS_MS)
+  }
+
+  function handleMobileEventBlockClick(e, event) {
+    if (mobileEventSuppressClickRef.current || mobileEventDragStateRef.current?.dragging) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+
+    openMobileEventModal(event)
+  }
+
   function isEventInProgress(event) {
     if (event.date !== currentDateISO) return false
 
@@ -4366,26 +4638,71 @@ export default function App() {
           <div className="pc-notes-masonry" aria-label="メモ一覧">
             {filteredPcNotes.map(note => {
               const noteParts = noteDisplayParts(note)
+              const isCardPaletteOpen = openNoteCardPaletteId === note.id
+              const isCardMenuOpen = openNoteCardMenuId === note.id
+              const cardClassName = [
+                'pc-note-card',
+                isCardPaletteOpen || isCardMenuOpen ? 'has-card-tools-open' : ''
+              ].filter(Boolean).join(' ')
 
               return (
                 <article
                   key={note.id}
-                  className="pc-note-card"
+                  className={cardClassName}
                   style={noteColorStyle(note.color)}
                   onClick={() => openPcNoteEditor(note, mode)}
                 >
                   {noteParts.title && <h2>{noteParts.title}</h2>}
                   {noteParts.body && <p>{noteParts.body}</p>}
-                  <div className="pc-note-card-actions">
-                    <button
-                      type="button"
-                      onClick={e => {
-                        e.stopPropagation()
-                        deletePcNote(note.id)
-                      }}
-                    >
-                      削除
-                    </button>
+                  <div className="pc-note-card-actions pc-note-card-control-zone" onClick={e => e.stopPropagation()}>
+                    <div className="pc-note-card-tool-area">
+                      <button
+                        type="button"
+                        className="pc-note-card-icon-button"
+                        onClick={e => toggleNoteCardPalette(e, note.id)}
+                        aria-label="背景色を変更"
+                        title="背景色を変更"
+                      >
+                        <span className="pc-note-palette-icon" aria-hidden="true" />
+                      </button>
+                      {isCardPaletteOpen && (
+                        <div className="pc-note-color-panel pc-note-card-color-panel" aria-label="背景色を選択">
+                          {NOTE_COLOR_OPTIONS.map(option => (
+                            <button
+                              type="button"
+                              key={option.id}
+                              className={normalizeNoteColor(note.color) === option.color ? 'selected' : ''}
+                              style={{ '--swatch-color': option.color }}
+                              onClick={() => updatePcNoteCardColor(note.id, option.color)}
+                              aria-label={option.label}
+                              title={option.label}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="pc-note-card-menu-area">
+                      <button
+                        type="button"
+                        className="pc-note-card-icon-button pc-note-card-menu-button"
+                        onClick={e => toggleNoteCardMenu(e, note.id)}
+                        aria-label="メモ操作"
+                        title="メモ操作"
+                      >
+                        <span className="pc-note-kebab-icon" aria-hidden="true" />
+                      </button>
+                      {isCardMenuOpen && (
+                        <div className="pc-note-card-menu" role="menu">
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => deletePcNote(note.id)}
+                          >
+                            メモを削除
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </article>
               )
@@ -4515,7 +4832,7 @@ export default function App() {
         {mobileActivePage === 'events' && (
           <section className="mobile-section mobile-schedule-page" ref={mobileScheduleSectionRef}>
             <div
-              className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''}`}
+              className={`mobile-timeline ${mobileDragSelection ? 'creating' : ''} ${mobileEventDragState?.dragging ? 'event-dragging' : ''}`}
               style={{
                 height: `${MOBILE_TIMELINE_HEIGHT}px`,
                 '--mobile-hour-height': `${MOBILE_HOUR_HEIGHT}px`
@@ -4578,11 +4895,13 @@ export default function App() {
                 {selectedMobileEvents.map((event, index) => {
                   const previousEvent = selectedMobileEvents[index - 1]
                   const isConnectedTop = previousEvent?.endTime === event.startTime
+                  const isDraggingEvent = mobileEventDragState?.dragging && mobileEventDragState.eventId === event.id
                   const className = [
                     'mobile-event-card',
                     'mobile-event-block',
                     isEventInProgress(event) ? 'current-event' : '',
-                    isConnectedTop ? 'connected-top' : ''
+                    isConnectedTop ? 'connected-top' : '',
+                    isDraggingEvent ? 'dragging' : ''
                   ].filter(Boolean).join(' ')
 
                   return (
@@ -4590,11 +4909,14 @@ export default function App() {
                       key={event.id}
                       type="button"
                       className={className}
-                      style={mobileEventBlockStyle(event)}
-                      onClick={() => openMobileEventModal(event)}
+                      style={mobileEventStyleForRender(event)}
+                      onPointerDown={e => startMobileEventBlockInteraction(e, event)}
+                      onClick={e => handleMobileEventBlockClick(e, event)}
                       aria-label={`${event.startTime}〜${event.endTime} ${event.title || '無題の予定'}`}
                     >
+                      <span className="mobile-event-resize-handle top" aria-hidden="true" />
                       <span className="mobile-event-title">{event.title || '無題の予定'}</span>
+                      <span className="mobile-event-resize-handle bottom" aria-hidden="true" />
                     </button>
                   )
                 })}
