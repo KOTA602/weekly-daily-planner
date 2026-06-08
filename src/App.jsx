@@ -5,6 +5,7 @@ const EVENT_STORAGE_KEY = 'wdp_events_v1'
 const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
 const PC_NOTES_STORAGE_KEY = 'wdp_pc_notes_v1'
+const LOCAL_SYNC_META_STORAGE_KEY = 'wdp_local_sync_meta_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
 const RECURRING_TASKS_STORAGE_KEY = 'wdp_recurring_tasks_v1'
@@ -31,6 +32,7 @@ const SUPABASE_PULL_INTERVAL_MS = 30 * 1000
 const SUPABASE_DELETE_CHUNK_SIZE = 50
 const MIN_WEEK = startOfWeek(new Date('2026-01-01'))
 const MAX_WEEK = startOfWeek(new Date('2030-12-31'))
+const PLANNER_SYNC_DATASETS = ['events', 'tasks', 'memos', 'settings']
 
 function startOfWeek(date) {
   const d = new Date(date)
@@ -1251,6 +1253,38 @@ function saveMemos(memos) {
   localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(memos))
 }
 
+function normalizeLocalSyncMeta(meta) {
+  const rawMeta = isPlainObject(meta) ? meta : {}
+
+  return PLANNER_SYNC_DATASETS.reduce((nextMeta, dataset) => {
+    const entry = isPlainObject(rawMeta[dataset]) ? rawMeta[dataset] : {}
+    const changedAt = Number(entry.changedAt)
+
+    nextMeta[dataset] = {
+      dirty: Boolean(entry.dirty),
+      changedAt: Number.isFinite(changedAt) ? changedAt : 0
+    }
+    return nextMeta
+  }, {})
+}
+
+function defaultLocalSyncMeta() {
+  try {
+    const raw = localStorage.getItem(LOCAL_SYNC_META_STORAGE_KEY)
+    return normalizeLocalSyncMeta(raw ? JSON.parse(raw) : {})
+  } catch {
+    return normalizeLocalSyncMeta({})
+  }
+}
+
+function saveLocalSyncMeta(meta) {
+  localStorage.setItem(LOCAL_SYNC_META_STORAGE_KEY, JSON.stringify(normalizeLocalSyncMeta(meta)))
+}
+
+function localSyncMetaHasDirtyDataset(meta) {
+  return PLANNER_SYNC_DATASETS.some(dataset => Boolean(meta?.[dataset]?.dirty))
+}
+
 function saveGoogleConnected(connected) {
   if (connected) {
     localStorage.setItem(GOOGLE_CONNECTED_STORAGE_KEY, 'true')
@@ -1743,9 +1777,17 @@ export default function App() {
   const recurringTaskRulesRef = useRef([])
   const recurringTaskExclusionsRef = useRef([])
   const initialPlannerDataRef = useRef(null)
+  const localSyncMetaRef = useRef(defaultLocalSyncMeta())
+  const persistenceEffectsReadyRef = useRef({
+    events: false,
+    tasks: false,
+    memos: false,
+    settings: false
+  })
   const supabaseReadyRef = useRef(false)
   const applyingSupabaseSnapshotRef = useRef(false)
   const supabaseSaveTimersRef = useRef({ events: null, tasks: null, memos: null, settings: null })
+  const supabaseDirtyRetryTimerRef = useRef(null)
   const supabaseRowsRef = useRef({
     events: new Map(),
     tasks: new Map(),
@@ -1891,13 +1933,167 @@ export default function App() {
     textarea.style.overflowY = 'hidden'
   }
 
+  function updateLocalSyncMeta(updater) {
+    const nextMeta = normalizeLocalSyncMeta(updater(localSyncMetaRef.current))
+    localSyncMetaRef.current = nextMeta
+    saveLocalSyncMeta(nextMeta)
+    return nextMeta
+  }
+
+  function markLocalSyncDatasetDirty(dataset) {
+    const changedAt = Date.now()
+    updateLocalSyncMeta(prev => ({
+      ...prev,
+      [dataset]: {
+        dirty: true,
+        changedAt
+      }
+    }))
+    lastLocalSupabaseChangeAtRef.current = changedAt
+    return changedAt
+  }
+
+  function markLocalSyncDatasetClean(dataset, changedAt) {
+    updateLocalSyncMeta(prev => {
+      const current = prev[dataset] || { dirty: false, changedAt: 0 }
+      if (!current.dirty) return prev
+      if (Number(current.changedAt) > changedAt) return prev
+
+      return {
+        ...prev,
+        [dataset]: {
+          dirty: false,
+          changedAt: current.changedAt || changedAt
+        }
+      }
+    })
+  }
+
+  function markPersistedDatasetChange(dataset) {
+    if (!persistenceEffectsReadyRef.current[dataset]) {
+      persistenceEffectsReadyRef.current[dataset] = true
+      return localSyncMetaRef.current[dataset]?.changedAt || 0
+    }
+
+    if (applyingSupabaseSnapshotRef.current) {
+      return localSyncMetaRef.current[dataset]?.changedAt || 0
+    }
+
+    return markLocalSyncDatasetDirty(dataset)
+  }
+
+  function hasPendingLocalSupabaseChanges(meta = localSyncMetaRef.current) {
+    return localSyncMetaHasDirtyDataset(meta)
+  }
+
+  function currentPlannerDataForSupabase() {
+    return {
+      events: eventsRef.current,
+      tasks: tasksRef.current,
+      memos: memosRef.current,
+      settings: plannerSettingsPayload({
+        recurringTaskRules: recurringTaskRulesRef.current,
+        recurringTaskExclusions: recurringTaskExclusionsRef.current,
+        pcNotes: pcNotesRef.current
+      })
+    }
+  }
+
+  function scheduleDirtySupabaseRetry() {
+    if (!supabaseConfigured) return
+    if (supabaseDirtyRetryTimerRef.current) return
+    if (!hasPendingLocalSupabaseChanges()) return
+
+    supabaseDirtyRetryTimerRef.current = window.setTimeout(() => {
+      supabaseDirtyRetryTimerRef.current = null
+      if (!supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) {
+        scheduleDirtySupabaseRetry()
+        return
+      }
+      if (supabasePushInFlightRef.current > 0) {
+        scheduleDirtySupabaseRetry()
+        return
+      }
+
+      void pushDirtyPlannerDataToSupabase(
+        currentPlannerDataForSupabase(),
+        localSyncMetaRef.current
+      ).finally(() => {
+        if (hasPendingLocalSupabaseChanges()) {
+          scheduleDirtySupabaseRetry()
+        }
+      })
+    }, 5000)
+  }
+
+  function plannerDataWithPendingLocal(remoteData, localData, meta) {
+    const normalizedMeta = normalizeLocalSyncMeta(meta)
+    const localSettings = plannerSettingsPayload(localData.settings || {})
+    const remoteSettings = plannerSettingsPayload(remoteData.settings || {})
+
+    return {
+      events: normalizedMeta.events.dirty ? localData.events : remoteData.events,
+      tasks: normalizedMeta.tasks.dirty ? localData.tasks : remoteData.tasks,
+      memos: normalizedMeta.memos.dirty ? localData.memos : remoteData.memos,
+      settings: normalizedMeta.settings.dirty ? localSettings : remoteSettings
+    }
+  }
+
+  async function pushDirtyPlannerDataToSupabase(data, metaSnapshot) {
+    const dirtyMeta = normalizeLocalSyncMeta(metaSnapshot)
+    if (!localSyncMetaHasDirtyDataset(dirtyMeta)) return
+
+    setCloudStatus('saving')
+    setCloudMessage('クラウド保存中')
+    supabasePushInFlightRef.current += 1
+
+    try {
+      const timestamp = new Date().toISOString()
+      const rows = supabaseRowsFromPlannerData(data, supabaseRowsRef.current, timestamp)
+
+      if (dirtyMeta.events.dirty) {
+        supabaseRowsRef.current.events = await syncSupabaseRows('events', rows.events, supabaseRowsRef.current.events)
+        markLocalSyncDatasetClean('events', dirtyMeta.events.changedAt)
+      }
+
+      if (dirtyMeta.tasks.dirty) {
+        supabaseRowsRef.current.tasks = await syncSupabaseRows('tasks', rows.tasks, supabaseRowsRef.current.tasks)
+        markLocalSyncDatasetClean('tasks', dirtyMeta.tasks.changedAt)
+      }
+
+      if (dirtyMeta.memos.dirty) {
+        supabaseRowsRef.current.memos = await syncSupabaseRows('memos', rows.memos, supabaseRowsRef.current.memos)
+        markLocalSyncDatasetClean('memos', dirtyMeta.memos.changedAt)
+      }
+
+      if (dirtyMeta.settings.dirty) {
+        supabaseRowsRef.current.settings = await syncSupabaseRows(
+          'settings',
+          rows.settings,
+          supabaseRowsRef.current.settings
+        )
+        markLocalSyncDatasetClean('settings', dirtyMeta.settings.changedAt)
+      }
+
+      setCloudStatus('connected')
+      setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
+    } catch (error) {
+      console.error('Supabase dirty data sync failed', error)
+      setCloudStatus('error')
+      setCloudMessage('クラウド保存失敗')
+      scheduleDirtySupabaseRetry()
+    } finally {
+      supabasePushInFlightRef.current -= 1
+    }
+  }
+
   useEffect(() => {
     eventsRef.current = events
     saveEvents(events)
+    const localChangedAt = markPersistedDatasetChange('events')
 
     if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
 
-    lastLocalSupabaseChangeAtRef.current = Date.now()
     setCloudStatus('saving')
     setCloudMessage('クラウド保存中')
 
@@ -1913,26 +2109,29 @@ export default function App() {
           const timestamp = new Date().toISOString()
           const rows = eventsToSupabaseRows(snapshot, supabaseRowsRef.current.events, timestamp)
           supabaseRowsRef.current.events = await syncSupabaseRows('events', rows, supabaseRowsRef.current.events)
+          markLocalSyncDatasetClean('events', localChangedAt)
           setCloudStatus('connected')
           setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
         } catch (error) {
           console.error('Supabase events sync failed', error)
           setCloudStatus('error')
           setCloudMessage('クラウド保存失敗')
+          scheduleDirtySupabaseRetry()
         } finally {
           supabasePushInFlightRef.current -= 1
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [events, supabaseConfigured])
 
   useEffect(() => {
     tasksRef.current = tasks
     saveTasks(tasks)
+    const localChangedAt = markPersistedDatasetChange('tasks')
 
     if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
 
-    lastLocalSupabaseChangeAtRef.current = Date.now()
     setCloudStatus('saving')
     setCloudMessage('クラウド保存中')
 
@@ -1948,26 +2147,29 @@ export default function App() {
           const timestamp = new Date().toISOString()
           const rows = tasksToSupabaseRows(snapshot, supabaseRowsRef.current.tasks, timestamp)
           supabaseRowsRef.current.tasks = await syncSupabaseRows('tasks', rows, supabaseRowsRef.current.tasks)
+          markLocalSyncDatasetClean('tasks', localChangedAt)
           setCloudStatus('connected')
           setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
         } catch (error) {
           console.error('Supabase tasks sync failed', error)
           setCloudStatus('error')
           setCloudMessage('クラウド保存失敗')
+          scheduleDirtySupabaseRetry()
         } finally {
           supabasePushInFlightRef.current -= 1
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tasks, supabaseConfigured])
 
   useEffect(() => {
     memosRef.current = memos
     saveMemos(memos)
+    const localChangedAt = markPersistedDatasetChange('memos')
 
     if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
 
-    lastLocalSupabaseChangeAtRef.current = Date.now()
     setCloudStatus('saving')
     setCloudMessage('クラウド保存中')
 
@@ -1983,17 +2185,20 @@ export default function App() {
           const timestamp = new Date().toISOString()
           const rows = memosToSupabaseRows(snapshot, supabaseRowsRef.current.memos, timestamp)
           supabaseRowsRef.current.memos = await syncSupabaseRows('memos', rows, supabaseRowsRef.current.memos)
+          markLocalSyncDatasetClean('memos', localChangedAt)
           setCloudStatus('connected')
           setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
         } catch (error) {
           console.error('Supabase memos sync failed', error)
           setCloudStatus('error')
           setCloudMessage('クラウド保存失敗')
+          scheduleDirtySupabaseRetry()
         } finally {
           supabasePushInFlightRef.current -= 1
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memos, supabaseConfigured])
 
   useEffect(() => {
@@ -2006,10 +2211,10 @@ export default function App() {
     recurringTaskExclusionsRef.current = recurringTaskExclusions
     saveRecurringTaskRules(recurringTaskRules)
     saveRecurringTaskExclusions(recurringTaskExclusions)
+    const localChangedAt = markPersistedDatasetChange('settings')
 
     if (!supabaseConfigured || !supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
 
-    lastLocalSupabaseChangeAtRef.current = Date.now()
     setCloudStatus('saving')
     setCloudMessage('クラウド保存中')
 
@@ -2029,17 +2234,20 @@ export default function App() {
             rows,
             supabaseRowsRef.current.settings
           )
+          markLocalSyncDatasetClean('settings', localChangedAt)
           setCloudStatus('connected')
           setCloudMessage(`クラウド保存済み ${formatClock(new Date())}`)
         } catch (error) {
           console.error('Supabase settings sync failed', error)
           setCloudStatus('error')
           setCloudMessage('クラウド保存失敗')
+          scheduleDirtySupabaseRetry()
         } finally {
           supabasePushInFlightRef.current -= 1
         }
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recurringTaskRules, recurringTaskExclusions, pcNotes, supabaseConfigured])
 
   useEffect(() => {
@@ -2070,32 +2278,8 @@ export default function App() {
           memos: rowsById(remoteRows.memos),
           settings: rowsById(remoteRows.settings)
         }
-
-        if (plannerDataHasContent(remoteData)) {
-          applyingSupabaseSnapshotRef.current = true
-          supabaseReadyRef.current = false
-          eventsRef.current = remoteData.events
-          tasksRef.current = remoteData.tasks
-          memosRef.current = remoteData.memos
-          pcNotesRef.current = remoteData.settings.pcNotes || []
-          recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
-          recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
-          setEvents(remoteData.events)
-          setTasks(remoteData.tasks)
-          setMemos(remoteData.memos)
-          setPcNotes(remoteData.settings.pcNotes || [])
-          setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
-          setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
-          setCloudStatus('connected')
-          setCloudMessage(`クラウド読込済み ${formatClock(new Date())}`)
-
-          window.setTimeout(() => {
-            applyingSupabaseSnapshotRef.current = false
-            supabaseReadyRef.current = true
-          }, 0)
-          return
-        }
-
+        const pendingLocalSyncMeta = normalizeLocalSyncMeta(localSyncMetaRef.current)
+        const hasPendingLocalChanges = localSyncMetaHasDirtyDataset(pendingLocalSyncMeta)
         const initialLocalData = {
           ...(initialPlannerDataRef.current || { events: [], tasks: [], memos: {} }),
           settings: plannerSettingsPayload({
@@ -2104,6 +2288,42 @@ export default function App() {
             pcNotes: pcNotesRef.current
           })
         }
+
+        if (plannerDataHasContent(remoteData) || hasPendingLocalChanges) {
+          const hydratedData = hasPendingLocalChanges
+            ? plannerDataWithPendingLocal(remoteData, initialLocalData, pendingLocalSyncMeta)
+            : remoteData
+
+          applyingSupabaseSnapshotRef.current = true
+          supabaseReadyRef.current = false
+          eventsRef.current = hydratedData.events
+          tasksRef.current = hydratedData.tasks
+          memosRef.current = hydratedData.memos
+          pcNotesRef.current = hydratedData.settings.pcNotes || []
+          recurringTaskRulesRef.current = hydratedData.settings.recurringTaskRules || []
+          recurringTaskExclusionsRef.current = hydratedData.settings.recurringTaskExclusions || []
+          setEvents(hydratedData.events)
+          setTasks(hydratedData.tasks)
+          setMemos(hydratedData.memos)
+          setPcNotes(hydratedData.settings.pcNotes || [])
+          setRecurringTaskRules(hydratedData.settings.recurringTaskRules || [])
+          setRecurringTaskExclusions(hydratedData.settings.recurringTaskExclusions || [])
+          setCloudStatus('connected')
+          setCloudMessage(hasPendingLocalChanges
+            ? `ローカル変更を復元 ${formatClock(new Date())}`
+            : `クラウド読込済み ${formatClock(new Date())}`)
+
+          if (hasPendingLocalChanges) {
+            await pushDirtyPlannerDataToSupabase(hydratedData, pendingLocalSyncMeta)
+          }
+
+          window.setTimeout(() => {
+            applyingSupabaseSnapshotRef.current = false
+            supabaseReadyRef.current = true
+          }, 0)
+          return
+        }
+
         if (plannerDataHasContent(initialLocalData)) {
           setCloudStatus('saving')
           setCloudMessage('クラウド初回保存中')
@@ -2142,6 +2362,7 @@ export default function App() {
     return () => {
       cancelled = true
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabaseConfigured])
 
   useEffect(() => {
@@ -2150,6 +2371,7 @@ export default function App() {
     async function refreshFromSupabase() {
       if (!supabaseReadyRef.current || applyingSupabaseSnapshotRef.current) return
       if (supabasePushInFlightRef.current > 0) return
+      if (hasPendingLocalSupabaseChanges()) return
       if (Date.now() - lastLocalSupabaseChangeAtRef.current < SUPABASE_SAVE_DEBOUNCE_MS + 1000) return
 
       try {
@@ -2228,6 +2450,9 @@ export default function App() {
     Object.values(supabaseSaveTimersRef.current).forEach(timerId => {
       if (timerId) window.clearTimeout(timerId)
     })
+    if (supabaseDirtyRetryTimerRef.current) {
+      window.clearTimeout(supabaseDirtyRetryTimerRef.current)
+    }
   }, [])
 
   useEffect(() => {
