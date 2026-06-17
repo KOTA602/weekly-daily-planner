@@ -1769,6 +1769,46 @@
 .pc-note-palette-button:hover {
   background: rgba(15, 23, 42, 0.08);
 }
+.pc-note-category-toggle-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+}
+.pc-note-category-toggle-button:hover {
+  background: rgba(15, 23, 42, 0.08);
+}
+.pc-note-hamburger-icon,
+.pc-note-hamburger-icon::before,
+.pc-note-hamburger-icon::after {
+  display: block;
+  width: 18px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.pc-note-hamburger-icon {
+  position: relative;
+}
+.pc-note-hamburger-icon::before,
+.pc-note-hamburger-icon::after {
+  position: absolute;
+  left: 0;
+  content: "";
+}
+.pc-note-hamburger-icon::before {
+  top: -6px;
+}
+.pc-note-hamburger-icon::after {
+  top: 6px;
+}
 .pc-note-palette-icon {
   position: relative;
   width: 22px;
@@ -1838,6 +1878,43 @@
   font-size: 14px;
   font-weight: 900;
   text-shadow: 0 1px 3px rgba(15, 23, 42, 0.9);
+}
+.pc-note-category-picker-panel {
+  position: absolute;
+  left: 34px;
+  bottom: calc(100% + 8px);
+  z-index: 22;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 170px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  padding: 8px;
+}
+.pc-note-category-picker-panel button {
+  width: 100%;
+  min-height: 34px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #334155;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 0 10px;
+  text-align: left;
+}
+.pc-note-category-picker-panel button:hover {
+  background: #f1f5f9;
+}
+.pc-note-category-picker-panel button.selected {
+  background: #e8f0fe;
+  color: #1e3a8a;
 }
 .pc-notes-empty {
   margin: 42px 0 0;
@@ -1957,65 +2034,58 @@
 .pc-note-checklist-editor {
   display: flex;
   flex-direction: column;
-  gap: 7px;
-  padding: 0 14px 8px;
-}
-.pc-note-checklist-empty {
-  color: var(--note-muted);
-  font-size: 13px;
-  font-weight: 700;
-  opacity: 0.8;
-  padding: 4px 2px;
+  gap: 2px;
+  min-height: 72px;
+  padding: 12px 14px 8px;
 }
 .pc-note-checklist-edit-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 30px;
+  grid-template-columns: 24px minmax(0, 1fr) 28px;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
+  min-height: 34px;
 }
-.pc-note-checklist-edit-row input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  accent-color: #2563eb;
+.pc-note-check-toggle {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(71, 85, 105, 0.52);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.pc-note-check-toggle.checked {
+  border-color: #2563eb;
+  background: #2563eb;
+  box-shadow: inset 0 0 0 4px #fff;
 }
 .pc-note-checklist-edit-row input[type="text"] {
   min-width: 0;
-  min-height: 34px;
+  min-height: 32px;
   border: none;
-  border-bottom: 1px solid rgba(15, 23, 42, 0.14);
   background: transparent;
   color: var(--note-fg);
-  font-size: 14px;
+  font-size: 15px;
   outline: none;
 }
-.pc-note-checklist-edit-row button {
-  width: 30px;
-  height: 30px;
+.pc-note-checklist-edit-row input[type="text"].checked {
+  color: rgba(71, 85, 105, 0.72);
+  text-decoration: line-through;
+}
+.pc-note-check-delete {
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 999px;
   background: transparent;
   color: var(--note-muted);
   cursor: pointer;
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 900;
+  padding: 0;
 }
-.pc-note-checklist-edit-row button:hover {
+.pc-note-check-delete:hover {
   background: rgba(15, 23, 42, 0.08);
-}
-.pc-note-add-check-item {
-  align-self: flex-start;
-  min-height: 32px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: #2563eb;
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 900;
-  padding: 0 10px;
-}
-.pc-note-add-check-item:hover {
-  background: rgba(37, 99, 235, 0.08);
 }
 .pc-note-card h2 {
   color: var(--note-fg);
@@ -2211,6 +2281,11 @@
   max-height: calc(88vh - 76px);
   overflow-y: auto;
   resize: vertical;
+}
+.pc-note-edit-modal .pc-note-checklist-editor {
+  min-height: min(62vh, 520px);
+  max-height: calc(88vh - 92px);
+  overflow-y: auto;
 }
 .pc-note-edit-actions {
   flex-wrap: wrap;
@@ -3682,6 +3757,25 @@
   max-height: 42svh;
   font-size: 16px;
 }
+.mobile-memo-page .pc-note-checklist-editor {
+  min-height: 66px;
+  padding: 10px 12px 8px;
+}
+.mobile-memo-page .pc-note-checklist-edit-row {
+  grid-template-columns: 26px minmax(0, 1fr) 30px;
+  min-height: 38px;
+}
+.mobile-memo-page .pc-note-checklist-edit-row input[type="text"] {
+  font-size: 16px;
+}
+.mobile-memo-page .pc-note-check-toggle {
+  width: 22px;
+  height: 22px;
+}
+.mobile-memo-page .pc-note-category-picker-panel {
+  left: 0;
+  max-width: calc(100vw - 48px);
+}
 .mobile-memo-page .pc-note-composer-actions {
   align-items: stretch;
   flex-wrap: wrap;
@@ -4246,6 +4340,10 @@
   .pc-note-edit-modal .pc-note-content-input {
     min-height: min(64svh, 560px);
     max-height: calc(86svh - 78px);
+  }
+  .pc-note-edit-modal .pc-note-checklist-editor {
+    min-height: min(58svh, 500px);
+    max-height: calc(86svh - 92px);
   }
   .mobile-timeline {
     overflow: visible;
