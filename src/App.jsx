@@ -143,6 +143,7 @@ const DEFAULT_NOTE_CATEGORIES = [
   { id: 'study', name: '学業' }
 ]
 const DEFAULT_NOTE_CATEGORY_IDS = new Set(DEFAULT_NOTE_CATEGORIES.map(category => category.id))
+const PROTECTED_NOTE_CATEGORY_IDS = new Set([ALL_NOTE_CATEGORY_ID, UNCATEGORIZED_NOTE_CATEGORY_ID])
 const NOTE_DEFAULT_COLOR = '#FFFFFF'
 const NOTE_COLOR_OPTIONS = [
   { id: 'white', label: '白', color: '#FFFFFF', textColor: '#0f172a', mutedColor: '#334155' },
@@ -1228,24 +1229,33 @@ function createNoteCategoryId(name, categories = []) {
   return id
 }
 
-function normalizePcNote(note) {
+function normalizePcNote(note, categories = null) {
   if (!note || typeof note !== 'object' || Array.isArray(note)) return null
 
   const legacyTitle = String(note.title ?? '').trim()
-  const legacyContent = String(note.content ?? '').trim()
+  const legacyBody = String(note.body ?? '').trim()
+  const legacyContent = String(note.content ?? legacyBody).trim()
   const content = legacyTitle && legacyContent
     ? `${legacyTitle}\n${legacyContent}`.trim()
     : (legacyTitle || legacyContent)
   const color = normalizeNoteColor(note.color)
-  if (!content) return null
+  const type = note.type === 'checklist' ? 'checklist' : 'text'
+  const checklistItems = normalizeChecklistItems(note.checklistItems)
+  if (!content && checklistItems.length === 0) return null
 
   const timestamp = new Date().toISOString()
+  const noteParts = noteDisplayParts({ content })
 
   return {
     id: String(note.id || createLocalId('pc-note')),
+    title: String(note.title ?? noteParts.title),
+    body: String(note.body ?? noteParts.body),
     content,
     color,
-    categoryId: normalizeNoteCategoryId(note.categoryId),
+    categoryId: knownNoteCategoryIdForData(note.categoryId, categories),
+    type,
+    checklistItems,
+    isPinned: Boolean(note.isPinned),
     createdAt: String(note.createdAt || timestamp),
     updatedAt: String(note.updatedAt || timestamp)
   }
@@ -1292,18 +1302,88 @@ function noteCategoryName(categories, categoryId) {
   return categories.find(category => category.id === normalizedId)?.name || '未分類'
 }
 
-function normalizePcNotes(notes) {
+function normalizeChecklistItem(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) {
+    const text = String(item ?? '').trim()
+    if (!text) return null
+    return {
+      id: createLocalId('check'),
+      text,
+      checked: false
+    }
+  }
+
+  const text = String(item.text ?? '').trim()
+  if (!text) return null
+
+  return {
+    id: String(item.id || createLocalId('check')),
+    text,
+    checked: Boolean(item.checked)
+  }
+}
+
+function normalizeChecklistItems(items) {
+  if (!Array.isArray(items)) return []
+  return items.map(normalizeChecklistItem).filter(Boolean)
+}
+
+function checklistItemsFromText(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map(line => ({
+      id: createLocalId('check'),
+      text: line,
+      checked: false
+    }))
+}
+
+function textFromChecklistItems(items) {
+  return normalizeChecklistItems(items).map(item => item.text).join('\n')
+}
+
+function noteSearchText(note) {
+  return [
+    note.content || '',
+    note.title || '',
+    note.body || '',
+    ...normalizeChecklistItems(note.checklistItems).map(item => item.text)
+  ].join('\n').toLowerCase()
+}
+
+function sortedNotesForDisplay(notes) {
+  return [...notes].sort((a, b) => {
+    if (Boolean(a.isPinned) !== Boolean(b.isPinned)) {
+      return a.isPinned ? -1 : 1
+    }
+    const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime()
+    const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime()
+    return bTime - aTime
+  })
+}
+
+function knownNoteCategoryIdForData(categoryId, categories = null) {
+  const normalizedId = normalizeNoteCategoryId(categoryId)
+  if (!Array.isArray(categories)) return normalizedId
+
+  const ids = new Set(normalizeNoteCategories(categories).map(category => category.id))
+  return ids.has(normalizedId) ? normalizedId : UNCATEGORIZED_NOTE_CATEGORY_ID
+}
+
+function normalizePcNotes(notes, categories = null) {
   if (!Array.isArray(notes)) return []
 
   return notes
-    .map(normalizePcNote)
+    .map(note => normalizePcNote(note, categories))
     .filter(Boolean)
 }
 
 function defaultPcNotes() {
   try {
     const raw = localStorage.getItem(PC_NOTES_STORAGE_KEY)
-    return normalizePcNotes(raw ? JSON.parse(raw) : [])
+    return normalizePcNotes(raw ? JSON.parse(raw) : [], defaultNoteCategories())
   } catch {
     return []
   }
@@ -1317,7 +1397,10 @@ function createPcNoteDraft(categoryId = UNCATEGORIZED_NOTE_CATEGORY_ID) {
   return {
     content: '',
     color: NOTE_DEFAULT_COLOR,
-    categoryId: normalizeNoteCategoryId(categoryId)
+    categoryId: normalizeNoteCategoryId(categoryId),
+    type: 'text',
+    checklistItems: [],
+    isPinned: false
   }
 }
 
@@ -1644,18 +1727,19 @@ function normalizeSupabaseJsonValue(value) {
 
 function plannerSettingsPayload(settings = {}) {
   const rawSettings = isPlainObject(settings) ? settings : {}
-  const rawPcNotes = Object.prototype.hasOwnProperty.call(rawSettings, 'pcNotes')
-    ? rawSettings.pcNotes
-    : defaultPcNotes()
   const rawNoteCategories = Object.prototype.hasOwnProperty.call(rawSettings, 'noteCategories')
     ? rawSettings.noteCategories
     : defaultNoteCategories()
+  const noteCategories = normalizeNoteCategories(rawNoteCategories)
+  const rawPcNotes = Object.prototype.hasOwnProperty.call(rawSettings, 'pcNotes')
+    ? rawSettings.pcNotes
+    : defaultPcNotes()
 
   return {
     recurringTaskRules: recurringTaskSettingsPayload(rawSettings.recurringTaskRules || []),
     recurringTaskExclusions: recurringTaskExclusionsPayload(rawSettings.recurringTaskExclusions || []),
-    pcNotes: normalizePcNotes(rawPcNotes),
-    noteCategories: normalizeNoteCategories(rawNoteCategories)
+    pcNotes: normalizePcNotes(rawPcNotes, noteCategories),
+    noteCategories
   }
 }
 
@@ -1996,6 +2080,7 @@ export default function App() {
   const [selectedNoteCategoryId, setSelectedNoteCategoryId] = useState(ALL_NOTE_CATEGORY_ID)
   const [newNoteCategoryName, setNewNoteCategoryName] = useState('')
   const [isMobileNoteCategoryDrawerOpen, setIsMobileNoteCategoryDrawerOpen] = useState(false)
+  const [noteToastMessage, setNoteToastMessage] = useState('')
   const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
   const [pcNoteEditMode, setPcNoteEditMode] = useState('pc')
@@ -2005,6 +2090,8 @@ export default function App() {
   const [isEditNoteColorPaletteOpen, setIsEditNoteColorPaletteOpen] = useState(false)
   const [openNoteCardPaletteId, setOpenNoteCardPaletteId] = useState(null)
   const [openNoteCardMenuId, setOpenNoteCardMenuId] = useState(null)
+  const [openNoteCardMoveMenuId, setOpenNoteCardMoveMenuId] = useState(null)
+  const [openNoteCategoryMenuId, setOpenNoteCategoryMenuId] = useState(null)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -2693,18 +2780,31 @@ export default function App() {
   }, [isNoteColorPaletteOpen, isEditNoteColorPaletteOpen])
 
   useEffect(() => {
-    if (!openNoteCardPaletteId && !openNoteCardMenuId) return undefined
+    if (!openNoteCardPaletteId && !openNoteCardMenuId && !openNoteCardMoveMenuId && !openNoteCategoryMenuId) return undefined
 
     function handleNoteCardControlsOutsidePointerDown(e) {
       if (e.target.closest?.('.pc-note-card-control-zone')) return
+      if (e.target.closest?.('.note-category-control-zone')) return
 
       setOpenNoteCardPaletteId(null)
       setOpenNoteCardMenuId(null)
+      setOpenNoteCardMoveMenuId(null)
+      setOpenNoteCategoryMenuId(null)
     }
 
     document.addEventListener('pointerdown', handleNoteCardControlsOutsidePointerDown, true)
     return () => document.removeEventListener('pointerdown', handleNoteCardControlsOutsidePointerDown, true)
-  }, [openNoteCardPaletteId, openNoteCardMenuId])
+  }, [openNoteCardMoveMenuId, openNoteCardPaletteId, openNoteCardMenuId, openNoteCategoryMenuId])
+
+  useEffect(() => {
+    if (!noteToastMessage) return undefined
+
+    const timerId = window.setTimeout(() => {
+      setNoteToastMessage('')
+    }, 2200)
+
+    return () => window.clearTimeout(timerId)
+  }, [noteToastMessage])
 
   useEffect(() => () => {
     if (mobileLongPressTimerRef.current) {
@@ -2816,10 +2916,14 @@ export default function App() {
           return knownCategoryId === effectiveSelectedNoteCategoryId
         })
 
-    if (!query) return categoryFilteredNotes
+    const searchedNotes = query
+      ? categoryFilteredNotes.filter(note => noteSearchText(note).includes(query))
+      : categoryFilteredNotes
 
-    return categoryFilteredNotes.filter(note => String(note.content || '').toLowerCase().includes(query))
+    return sortedNotesForDisplay(searchedNotes)
   }, [effectiveSelectedNoteCategoryId, noteCategoryIds, pcNoteSearch, pcNotes])
+  const pinnedPcNotes = filteredPcNotes.filter(note => note.isPinned)
+  const unpinnedPcNotes = filteredPcNotes.filter(note => !note.isPinned)
   const mobileDragRange = mobileDragSelection
     ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
     : null
@@ -3952,7 +4056,7 @@ export default function App() {
   }
 
   function deleteNoteCategory(categoryId) {
-    if (DEFAULT_NOTE_CATEGORY_IDS.has(categoryId)) return
+    if (PROTECTED_NOTE_CATEGORY_IDS.has(categoryId)) return
 
     const category = noteCategories.find(item => item.id === categoryId)
     if (!category) return
@@ -3973,6 +4077,118 @@ export default function App() {
         ? { ...prev, categoryId: UNCATEGORIZED_NOTE_CATEGORY_ID }
         : prev
     ))
+    setOpenNoteCategoryMenuId(null)
+  }
+
+  function movePcNoteToCategory(noteId, categoryId) {
+    const nextCategoryId = normalizeKnownNoteCategoryId(categoryId)
+    const note = pcNotes.find(item => item.id === noteId)
+    if (!note || normalizeKnownNoteCategoryId(note.categoryId) === nextCategoryId) {
+      setOpenNoteCardMoveMenuId(null)
+      setOpenNoteCardMenuId(null)
+      return
+    }
+
+    const timestamp = new Date().toISOString()
+    const categoryName = noteCategoryName(noteCategories, nextCategoryId)
+
+    saveUndoSnapshot()
+    setPcNotes(prev => normalizePcNotes(prev.map(item => (
+      item.id === noteId
+        ? { ...item, categoryId: nextCategoryId, updatedAt: timestamp }
+        : item
+    ))))
+    setOpenNoteCardMoveMenuId(null)
+    setOpenNoteCardMenuId(null)
+    setNoteToastMessage(`${categoryName}に移動しました`)
+  }
+
+  function togglePcNotePinned(noteId) {
+    const timestamp = new Date().toISOString()
+    saveUndoSnapshot()
+    setPcNotes(prev => normalizePcNotes(prev.map(note => (
+      note.id === noteId
+        ? { ...note, isPinned: !note.isPinned, updatedAt: timestamp }
+        : note
+    ))))
+  }
+
+  function togglePcNoteChecklistItem(noteId, itemId) {
+    const timestamp = new Date().toISOString()
+    saveUndoSnapshot()
+    setPcNotes(prev => normalizePcNotes(prev.map(note => (
+      note.id === noteId
+        ? {
+            ...note,
+            checklistItems: normalizeChecklistItems(note.checklistItems).map(item => (
+              item.id === itemId ? { ...item, checked: !item.checked } : item
+            )),
+            updatedAt: timestamp
+          }
+        : note
+    ))))
+  }
+
+  function addChecklistItemToDraft(setDraft) {
+    setDraft(prev => ({
+      ...prev,
+      type: 'checklist',
+      checklistItems: [
+        ...normalizeChecklistItems(prev.checklistItems),
+        { id: createLocalId('check'), text: '', checked: false }
+      ]
+    }))
+  }
+
+  function updateChecklistItemDraft(setDraft, itemId, value) {
+    setDraft(prev => ({
+      ...prev,
+      checklistItems: (Array.isArray(prev.checklistItems) ? prev.checklistItems : []).map(item => (
+        item.id === itemId ? { ...item, text: value } : item
+      ))
+    }))
+  }
+
+  function toggleChecklistItemDraft(setDraft, itemId) {
+    setDraft(prev => ({
+      ...prev,
+      checklistItems: (Array.isArray(prev.checklistItems) ? prev.checklistItems : []).map(item => (
+        item.id === itemId ? { ...item, checked: !item.checked } : item
+      ))
+    }))
+  }
+
+  function deleteChecklistItemDraft(setDraft, itemId) {
+    setDraft(prev => ({
+      ...prev,
+      checklistItems: (Array.isArray(prev.checklistItems) ? prev.checklistItems : []).filter(item => item.id !== itemId)
+    }))
+  }
+
+  function convertNoteDraftType(setDraft, nextType) {
+    setDraft(prev => {
+      const currentType = prev.type === 'checklist' ? 'checklist' : 'text'
+      if (currentType === nextType) return prev
+
+      if (nextType === 'checklist') {
+        return {
+          ...prev,
+          type: 'checklist',
+          checklistItems: normalizeChecklistItems(prev.checklistItems).length
+            ? normalizeChecklistItems(prev.checklistItems)
+            : checklistItemsFromText(prev.content),
+          content: ''
+        }
+      }
+
+      const checklistText = textFromChecklistItems(prev.checklistItems)
+      return {
+        ...prev,
+        type: 'text',
+        content: [prev.content, checklistText].filter(Boolean).join('\n'),
+        checklistItems: []
+      }
+    })
   }
 
   function closePcNoteComposer() {
@@ -3987,7 +4203,10 @@ export default function App() {
     setPcNoteEditDraft({
       content: note.content || '',
       color: normalizeNoteColor(note.color),
-      categoryId: normalizeKnownNoteCategoryId(note.categoryId)
+      categoryId: normalizeKnownNoteCategoryId(note.categoryId),
+      type: note.type === 'checklist' ? 'checklist' : 'text',
+      checklistItems: normalizeChecklistItems(note.checklistItems),
+      isPinned: Boolean(note.isPinned)
     })
     setIsEditNoteColorPaletteOpen(false)
   }
@@ -4004,8 +4223,12 @@ export default function App() {
     if (isNoteSearchMode) return
 
     const content = pcNoteDraft.content.trim()
+    const type = pcNoteDraft.type === 'checklist' ? 'checklist' : 'text'
+    const checklistItems = type === 'checklist'
+      ? normalizeChecklistItems(pcNoteDraft.checklistItems)
+      : []
 
-    if (!content) {
+    if (!content && checklistItems.length === 0) {
       closePcNoteComposer()
       return
     }
@@ -4018,6 +4241,9 @@ export default function App() {
         content,
         color: normalizeNoteColor(pcNoteDraft.color),
         categoryId: normalizeKnownNoteCategoryId(pcNoteDraft.categoryId || defaultPcNoteCategoryForSelection()),
+        type,
+        checklistItems,
+        isPinned: Boolean(pcNoteDraft.isPinned),
         createdAt: timestamp,
         updatedAt: timestamp
       },
@@ -4034,7 +4260,12 @@ export default function App() {
     if (!editingPcNoteId) return
 
     const content = pcNoteEditDraft.content.trim()
-    if (!content) {
+    const type = pcNoteEditDraft.type === 'checklist' ? 'checklist' : 'text'
+    const checklistItems = type === 'checklist'
+      ? normalizeChecklistItems(pcNoteEditDraft.checklistItems)
+      : []
+
+    if (!content && checklistItems.length === 0) {
       deletePcNote(editingPcNoteId)
       return
     }
@@ -4048,6 +4279,8 @@ export default function App() {
             content,
             color: normalizeNoteColor(pcNoteEditDraft.color),
             categoryId: normalizeKnownNoteCategoryId(pcNoteEditDraft.categoryId),
+            type,
+            checklistItems,
             updatedAt: timestamp
           }
         : note
@@ -4097,6 +4330,7 @@ export default function App() {
     setPcNotes(prev => prev.filter(note => note.id !== id))
     setOpenNoteCardPaletteId(prev => (prev === id ? null : prev))
     setOpenNoteCardMenuId(prev => (prev === id ? null : prev))
+    setOpenNoteCardMoveMenuId(prev => (prev === id ? null : prev))
     if (editingPcNoteId === id) {
       closePcNoteEditor()
     }
@@ -4118,13 +4352,25 @@ export default function App() {
   function toggleNoteCardPalette(e, id) {
     e.stopPropagation()
     setOpenNoteCardMenuId(null)
+    setOpenNoteCardMoveMenuId(null)
     setOpenNoteCardPaletteId(prev => (prev === id ? null : id))
   }
 
   function toggleNoteCardMenu(e, id) {
     e.stopPropagation()
     setOpenNoteCardPaletteId(null)
-    setOpenNoteCardMenuId(prev => (prev === id ? null : id))
+    if (openNoteCardMenuId === id) {
+      setOpenNoteCardMenuId(null)
+      setOpenNoteCardMoveMenuId(null)
+      return
+    }
+    setOpenNoteCardMoveMenuId(null)
+    setOpenNoteCardMenuId(id)
+  }
+
+  function toggleNoteCategoryMenu(e, id) {
+    e.stopPropagation()
+    setOpenNoteCategoryMenuId(prev => (prev === id ? null : id))
   }
 
   function changeDashboardMonth(offset) {
@@ -4999,6 +5245,49 @@ export default function App() {
     }
   }
 
+  function renderChecklistDraftEditor(draft, setDraft) {
+    const items = Array.isArray(draft.checklistItems) ? draft.checklistItems : []
+
+    return (
+      <div className="pc-note-checklist-editor">
+        {items.length === 0 ? (
+          <div className="pc-note-checklist-empty">チェック項目を追加できます</div>
+        ) : (
+          items.map(item => (
+            <div className="pc-note-checklist-edit-row" key={item.id}>
+              <input
+                type="checkbox"
+                checked={Boolean(item.checked)}
+                onChange={() => toggleChecklistItemDraft(setDraft, item.id)}
+                aria-label="チェック状態"
+              />
+              <input
+                type="text"
+                value={item.text}
+                onChange={e => updateChecklistItemDraft(setDraft, item.id, e.target.value)}
+                placeholder="チェック項目"
+              />
+              <button
+                type="button"
+                onClick={() => deleteChecklistItemDraft(setDraft, item.id)}
+                aria-label="項目を削除"
+              >
+                ×
+              </button>
+            </div>
+          ))
+        )}
+        <button
+          type="button"
+          className="pc-note-add-check-item"
+          onClick={() => addChecklistItemToDraft(setDraft)}
+        >
+          ＋ 項目を追加
+        </button>
+      </div>
+    )
+  }
+
   function renderNoteCategorySidebar(mode = 'pc') {
     const isMobileCategoryMenu = mode === 'mobile'
 
@@ -5008,12 +5297,13 @@ export default function App() {
         <div className="note-category-list">
           {noteCategories.map(category => {
             const isSelected = effectiveSelectedNoteCategoryId === category.id
-            const canDelete = !DEFAULT_NOTE_CATEGORY_IDS.has(category.id)
+            const canDelete = !PROTECTED_NOTE_CATEGORY_IDS.has(category.id)
+            const isCategoryMenuOpen = openNoteCategoryMenuId === category.id
 
             return (
               <div
                 key={category.id}
-                className={`note-category-row ${isSelected ? 'selected' : ''}`}
+                className={`note-category-row note-category-control-zone ${isSelected ? 'selected' : ''}`}
               >
                 <button
                   type="button"
@@ -5024,18 +5314,28 @@ export default function App() {
                   {category.name}
                 </button>
                 {canDelete && (
-                  <button
-                    type="button"
-                    className="note-category-delete"
-                    onClick={e => {
-                      e.stopPropagation()
-                      deleteNoteCategory(category.id)
-                    }}
-                    aria-label={`${category.name}を削除`}
-                    title="カテゴリ削除"
-                  >
-                    ×
-                  </button>
+                  <div className="note-category-menu-area">
+                    <button
+                      type="button"
+                      className="note-category-kebab"
+                      onClick={e => toggleNoteCategoryMenu(e, category.id)}
+                      aria-label={`${category.name}の操作`}
+                      title="カテゴリ操作"
+                    >
+                      <span className="pc-note-kebab-icon" aria-hidden="true" />
+                    </button>
+                    {isCategoryMenuOpen && (
+                      <div className="note-category-menu" role="menu">
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => deleteNoteCategory(category.id)}
+                        >
+                          カテゴリを削除
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )
@@ -5052,6 +5352,136 @@ export default function App() {
           <button type="submit">＋ カテゴリ追加</button>
         </form>
       </aside>
+    )
+  }
+
+  function renderPcNoteCard(note, mode = 'pc') {
+    const noteParts = noteDisplayParts(note)
+    const isCardPaletteOpen = openNoteCardPaletteId === note.id
+    const isCardMenuOpen = openNoteCardMenuId === note.id
+    const isMoveMenuOpen = openNoteCardMoveMenuId === note.id
+    const checklistItems = normalizeChecklistItems(note.checklistItems)
+    const isChecklist = note.type === 'checklist'
+    const cardClassName = [
+      'pc-note-card',
+      note.isPinned ? 'pinned' : '',
+      isCardPaletteOpen || isCardMenuOpen ? 'has-card-tools-open' : ''
+    ].filter(Boolean).join(' ')
+
+    return (
+      <article
+        key={note.id}
+        className={cardClassName}
+        style={noteColorStyle(note.color)}
+        onClick={() => openPcNoteEditor(note, mode)}
+      >
+        <button
+          type="button"
+          className={`pc-note-pin-button pc-note-card-control-zone ${note.isPinned ? 'active' : ''}`}
+          onClick={e => {
+            e.stopPropagation()
+            togglePcNotePinned(note.id)
+          }}
+          aria-label={note.isPinned ? 'ピン留めを解除' : 'ピン留め'}
+          title={note.isPinned ? 'ピン留めを解除' : 'ピン留め'}
+        >
+          ピン
+        </button>
+        {noteParts.title && <h2>{noteParts.title}</h2>}
+        {isChecklist ? (
+          <ul className="pc-note-checklist-preview" onClick={e => e.stopPropagation()}>
+            {checklistItems.map(item => (
+              <li key={item.id} className={item.checked ? 'checked' : ''}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={item.checked}
+                    onChange={() => togglePcNoteChecklistItem(note.id, item.id)}
+                  />
+                  <span>{item.text}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          noteParts.body && <p>{noteParts.body}</p>
+        )}
+        {isChecklist && noteParts.body && <p>{noteParts.body}</p>}
+        <div className="pc-note-card-actions pc-note-card-control-zone" onClick={e => e.stopPropagation()}>
+          <div className="pc-note-card-tool-area">
+            <button
+              type="button"
+              className="pc-note-card-icon-button"
+              onClick={e => toggleNoteCardPalette(e, note.id)}
+              aria-label="背景色を変更"
+              title="背景色を変更"
+            >
+              <span className="pc-note-palette-icon" aria-hidden="true" />
+            </button>
+            {isCardPaletteOpen && (
+              <div className="pc-note-color-panel pc-note-card-color-panel" aria-label="背景色を選択">
+                {NOTE_COLOR_OPTIONS.map(option => (
+                  <button
+                    type="button"
+                    key={option.id}
+                    className={normalizeNoteColor(note.color) === option.color ? 'selected' : ''}
+                    style={{ '--swatch-color': option.color }}
+                    onClick={() => updatePcNoteCardColor(note.id, option.color)}
+                    aria-label={option.label}
+                    title={option.label}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="pc-note-card-menu-area">
+            <button
+              type="button"
+              className="pc-note-card-icon-button pc-note-card-menu-button"
+              onClick={e => toggleNoteCardMenu(e, note.id)}
+              aria-label="メモ操作"
+              title="メモ操作"
+            >
+              <span className="pc-note-kebab-icon" aria-hidden="true" />
+            </button>
+            {isCardMenuOpen && (
+              <div className="pc-note-card-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="pc-note-card-menu-neutral"
+                  onClick={() => setOpenNoteCardMoveMenuId(prev => (prev === note.id ? null : note.id))}
+                >
+                  カテゴリ移動
+                </button>
+                {isMoveMenuOpen && (
+                  <div className="pc-note-move-category-panel">
+                    {noteCategoryOptions.map(category => (
+                      <button
+                        type="button"
+                        key={category.id}
+                        className={normalizeKnownNoteCategoryId(note.categoryId) === category.id ? 'selected' : ''}
+                        onClick={() => movePcNoteToCategory(note.id, category.id)}
+                      >
+                        {category.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="pc-note-card-menu-separator" />
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="danger"
+                  onClick={() => deletePcNote(note.id)}
+                >
+                  メモを削除
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </article>
     )
   }
 
@@ -5123,8 +5553,9 @@ export default function App() {
               value={pcNoteDraft.content}
               onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
               onKeyDown={isMobileNotes ? undefined : handlePcNoteCreateKeyDown}
-              placeholder={inputPlaceholder}
+              placeholder={pcNoteDraft.type === 'checklist' ? 'チェックリストのタイトル...' : inputPlaceholder}
             />
+            {pcNoteDraft.type === 'checklist' && renderChecklistDraftEditor(pcNoteDraft, setPcNoteDraft)}
             <div className="pc-note-composer-actions">
               <div className="pc-note-color-area" ref={pcNotePaletteRef}>
                 <button
@@ -5164,6 +5595,16 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                className="pc-note-type-toggle-button"
+                onClick={() => convertNoteDraftType(
+                  setPcNoteDraft,
+                  pcNoteDraft.type === 'checklist' ? 'text' : 'checklist'
+                )}
+              >
+                {pcNoteDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+              </button>
               <label className="pc-note-category-field">
                 <span>カテゴリ</span>
                 <select
@@ -5189,81 +5630,29 @@ export default function App() {
 
         {filteredPcNotes.length === 0 ? (
           <p className="pc-notes-empty">{emptyText}</p>
+        ) : pinnedPcNotes.length > 0 ? (
+          <>
+            <section className="pc-note-group">
+              <h3>ピン留め</h3>
+              <div className="pc-notes-masonry" aria-label="ピン留めメモ一覧">
+                {pinnedPcNotes.map(note => renderPcNoteCard(note, mode))}
+              </div>
+            </section>
+            {unpinnedPcNotes.length > 0 && (
+              <section className="pc-note-group">
+                <h3>その他</h3>
+                <div className="pc-notes-masonry" aria-label="その他のメモ一覧">
+                  {unpinnedPcNotes.map(note => renderPcNoteCard(note, mode))}
+                </div>
+              </section>
+            )}
+          </>
         ) : (
           <div className="pc-notes-masonry" aria-label="メモ一覧">
-            {filteredPcNotes.map(note => {
-              const noteParts = noteDisplayParts(note)
-              const isCardPaletteOpen = openNoteCardPaletteId === note.id
-              const isCardMenuOpen = openNoteCardMenuId === note.id
-              const cardClassName = [
-                'pc-note-card',
-                isCardPaletteOpen || isCardMenuOpen ? 'has-card-tools-open' : ''
-              ].filter(Boolean).join(' ')
-
-              return (
-                <article
-                  key={note.id}
-                  className={cardClassName}
-                  style={noteColorStyle(note.color)}
-                  onClick={() => openPcNoteEditor(note, mode)}
-                >
-                  {noteParts.title && <h2>{noteParts.title}</h2>}
-                  {noteParts.body && <p>{noteParts.body}</p>}
-                  <div className="pc-note-card-actions pc-note-card-control-zone" onClick={e => e.stopPropagation()}>
-                    <div className="pc-note-card-tool-area">
-                      <button
-                        type="button"
-                        className="pc-note-card-icon-button"
-                        onClick={e => toggleNoteCardPalette(e, note.id)}
-                        aria-label="背景色を変更"
-                        title="背景色を変更"
-                      >
-                        <span className="pc-note-palette-icon" aria-hidden="true" />
-                      </button>
-                      {isCardPaletteOpen && (
-                        <div className="pc-note-color-panel pc-note-card-color-panel" aria-label="背景色を選択">
-                          {NOTE_COLOR_OPTIONS.map(option => (
-                            <button
-                              type="button"
-                              key={option.id}
-                              className={normalizeNoteColor(note.color) === option.color ? 'selected' : ''}
-                              style={{ '--swatch-color': option.color }}
-                              onClick={() => updatePcNoteCardColor(note.id, option.color)}
-                              aria-label={option.label}
-                              title={option.label}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="pc-note-card-menu-area">
-                      <button
-                        type="button"
-                        className="pc-note-card-icon-button pc-note-card-menu-button"
-                        onClick={e => toggleNoteCardMenu(e, note.id)}
-                        aria-label="メモ操作"
-                        title="メモ操作"
-                      >
-                        <span className="pc-note-kebab-icon" aria-hidden="true" />
-                      </button>
-                      {isCardMenuOpen && (
-                        <div className="pc-note-card-menu" role="menu">
-                          <button
-                            type="button"
-                            role="menuitem"
-                            onClick={() => deletePcNote(note.id)}
-                          >
-                            メモを削除
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </article>
-              )
-            })}
+            {filteredPcNotes.map(note => renderPcNoteCard(note, mode))}
           </div>
         )}
+        {noteToastMessage && <div className="pc-note-toast">{noteToastMessage}</div>}
       </section>
     )
   }
@@ -6282,8 +6671,9 @@ export default function App() {
               value={pcNoteEditDraft.content}
               onChange={e => setPcNoteEditDraft(prev => ({ ...prev, content: e.target.value }))}
               onKeyDown={pcNoteEditMode === 'mobile' ? undefined : handlePcNoteEditKeyDown}
-              placeholder="メモを入力..."
+              placeholder={pcNoteEditDraft.type === 'checklist' ? 'チェックリストのタイトル...' : 'メモを入力...'}
             />
+            {pcNoteEditDraft.type === 'checklist' && renderChecklistDraftEditor(pcNoteEditDraft, setPcNoteEditDraft)}
             <div className="pc-note-composer-actions pc-note-edit-actions">
               <div className="pc-note-color-area" ref={pcNoteEditPaletteRef}>
                 <button
@@ -6314,6 +6704,16 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                className="pc-note-type-toggle-button"
+                onClick={() => convertNoteDraftType(
+                  setPcNoteEditDraft,
+                  pcNoteEditDraft.type === 'checklist' ? 'text' : 'checklist'
+                )}
+              >
+                {pcNoteEditDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+              </button>
               <label className="pc-note-category-field">
                 <span>カテゴリ</span>
                 <select
