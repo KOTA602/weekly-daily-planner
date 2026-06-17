@@ -1661,20 +1661,6 @@
   flex-wrap: wrap;
   padding: 4px 10px 10px;
 }
-.pc-note-type-toggle-button {
-  min-height: 32px;
-  border: none;
-  border-radius: 999px;
-  background: rgba(37, 99, 235, 0.08);
-  color: #1e40af;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 900;
-  padding: 0 12px;
-}
-.pc-note-type-toggle-button:hover {
-  background: rgba(37, 99, 235, 0.14);
-}
 .pc-note-category-field {
   display: flex;
   align-items: center;
@@ -1785,6 +1771,24 @@
 .pc-note-category-toggle-button:hover {
   background: rgba(15, 23, 42, 0.08);
 }
+.pc-note-checklist-toggle-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+}
+.pc-note-checklist-toggle-button:hover,
+.pc-note-checklist-toggle-button.active {
+  background: rgba(37, 99, 235, 0.12);
+  color: #1e40af;
+}
 .pc-note-hamburger-icon,
 .pc-note-hamburger-icon::before,
 .pc-note-hamburger-icon::after {
@@ -1808,6 +1812,35 @@
 }
 .pc-note-hamburger-icon::after {
   top: 6px;
+}
+.pc-note-checklist-icon {
+  position: relative;
+  display: block;
+  width: 20px;
+  height: 18px;
+}
+.pc-note-checklist-icon::before {
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 5px;
+  height: 5px;
+  border: 2px solid currentColor;
+  border-radius: 2px;
+  box-sizing: border-box;
+  content: "";
+  box-shadow: 0 7px 0 -1px currentColor, 0 14px 0 -1px currentColor;
+}
+.pc-note-checklist-icon::after {
+  position: absolute;
+  left: 10px;
+  top: 2px;
+  width: 10px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 7px 0 currentColor, 0 14px 0 currentColor;
+  content: "";
 }
 .pc-note-palette-icon {
   position: relative;
@@ -1915,6 +1948,16 @@
 .pc-note-category-picker-panel button.selected {
   background: #e8f0fe;
   color: #1e3a8a;
+}
+.pc-note-category-picker-panel p,
+.pc-note-move-category-panel p {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.45;
+  padding: 8px 10px;
+  white-space: nowrap;
 }
 .pc-notes-empty {
   margin: 42px 0 0;

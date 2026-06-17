@@ -6,6 +6,7 @@ const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
 const PC_NOTES_STORAGE_KEY = 'wdp_pc_notes_v1'
 const NOTE_CATEGORY_STORAGE_KEY = 'wdp_note_categories_v1'
+const NOTE_CATEGORY_RESET_STORAGE_KEY = 'wdp_note_categories_all_only_reset_v1'
 const LOCAL_SYNC_META_STORAGE_KEY = 'wdp_local_sync_meta_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
@@ -131,10 +132,11 @@ const PLANNER_SLOT_HOURS = Array.from(
 )
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
 const ALL_NOTE_CATEGORY_ID = 'all'
-const UNCATEGORIZED_NOTE_CATEGORY_ID = 'uncategorized'
 const DEFAULT_NOTE_CATEGORIES = [
-  { id: ALL_NOTE_CATEGORY_ID, name: 'すべて' },
-  { id: UNCATEGORIZED_NOTE_CATEGORY_ID, name: '未分類' },
+  { id: ALL_NOTE_CATEGORY_ID, name: 'すべて' }
+]
+const LEGACY_DEFAULT_NOTE_CATEGORIES = [
+  { id: 'uncategorized', name: '未分類' },
   { id: 'editing', name: '編集チェック' },
   { id: 'task', name: 'タスク管理' },
   { id: 'idea', name: 'アイデア' },
@@ -142,8 +144,7 @@ const DEFAULT_NOTE_CATEGORIES = [
   { id: 'work', name: '仕事' },
   { id: 'study', name: '学業' }
 ]
-const DEFAULT_NOTE_CATEGORY_IDS = new Set(DEFAULT_NOTE_CATEGORIES.map(category => category.id))
-const PROTECTED_NOTE_CATEGORY_IDS = new Set([ALL_NOTE_CATEGORY_ID, UNCATEGORIZED_NOTE_CATEGORY_ID])
+const PROTECTED_NOTE_CATEGORY_IDS = new Set([ALL_NOTE_CATEGORY_ID])
 const NOTE_DEFAULT_COLOR = '#FFFFFF'
 const NOTE_COLOR_OPTIONS = [
   { id: 'white', label: '白', color: '#FFFFFF', textColor: '#0f172a', mutedColor: '#334155' },
@@ -1166,7 +1167,7 @@ function defaultMemos() {
 
 function normalizeNoteCategoryId(categoryId) {
   const normalizedId = String(categoryId || '').trim()
-  if (!normalizedId || normalizedId === ALL_NOTE_CATEGORY_ID) return UNCATEGORIZED_NOTE_CATEGORY_ID
+  if (!normalizedId || normalizedId === ALL_NOTE_CATEGORY_ID || normalizedId === 'uncategorized') return null
   return normalizedId
 }
 
@@ -1178,6 +1179,9 @@ function appendNormalizedNoteCategory(categories, category) {
   const id = String(category?.id || '').trim()
   const name = normalizeNoteCategoryName(category?.name)
   if (!id || !name) return categories
+  if (id !== ALL_NOTE_CATEGORY_ID && LEGACY_DEFAULT_NOTE_CATEGORIES.some(item => item.id === id && item.name === name)) {
+    return categories
+  }
 
   const hasSameId = categories.some(item => item.id === id)
   const hasSameName = categories.some(item => item.name.toLowerCase() === name.toLowerCase())
@@ -1187,7 +1191,7 @@ function appendNormalizedNoteCategory(categories, category) {
 }
 
 function normalizeNoteCategories(categories) {
-  const normalized = DEFAULT_NOTE_CATEGORIES.map(category => ({ ...category }))
+  const normalized = [{ ...DEFAULT_NOTE_CATEGORIES[0] }]
   if (!Array.isArray(categories)) return normalized
 
   return categories.reduce((nextCategories, category) => (
@@ -1196,15 +1200,39 @@ function normalizeNoteCategories(categories) {
 }
 
 function hasCustomNoteCategories(categories) {
-  return normalizeNoteCategories(categories).some(category => !DEFAULT_NOTE_CATEGORY_IDS.has(category.id))
+  return normalizeNoteCategories(categories).some(category => category.id !== ALL_NOTE_CATEGORY_ID)
+}
+
+function resetStoredNoteCategoriesOnce() {
+  if (localStorage.getItem(NOTE_CATEGORY_RESET_STORAGE_KEY) === 'true') return
+
+  localStorage.setItem(NOTE_CATEGORY_STORAGE_KEY, JSON.stringify(DEFAULT_NOTE_CATEGORIES))
+
+  try {
+    const rawNotes = localStorage.getItem(PC_NOTES_STORAGE_KEY)
+    const parsedNotes = rawNotes ? JSON.parse(rawNotes) : []
+    if (Array.isArray(parsedNotes)) {
+      const migratedNotes = parsedNotes.map(note => (
+        note && typeof note === 'object' && !Array.isArray(note)
+          ? { ...note, categoryId: null }
+          : note
+      ))
+      localStorage.setItem(PC_NOTES_STORAGE_KEY, JSON.stringify(migratedNotes))
+    }
+  } catch {
+    // Keep memo data untouched if older saved data cannot be parsed.
+  }
+
+  localStorage.setItem(NOTE_CATEGORY_RESET_STORAGE_KEY, 'true')
 }
 
 function defaultNoteCategories() {
   try {
+    resetStoredNoteCategoriesOnce()
     const raw = localStorage.getItem(NOTE_CATEGORY_STORAGE_KEY)
-    return normalizeNoteCategories(raw ? JSON.parse(raw) : [])
+    return normalizeNoteCategories(raw ? JSON.parse(raw) : DEFAULT_NOTE_CATEGORIES)
   } catch {
-    return normalizeNoteCategories([])
+    return normalizeNoteCategories(DEFAULT_NOTE_CATEGORIES)
   }
 }
 
@@ -1299,7 +1327,8 @@ function noteCategoryName(categories, categoryId) {
   const normalizedId = categoryId === ALL_NOTE_CATEGORY_ID
     ? ALL_NOTE_CATEGORY_ID
     : normalizeNoteCategoryId(categoryId)
-  return categories.find(category => category.id === normalizedId)?.name || '未分類'
+  if (!normalizedId) return 'カテゴリなし'
+  return categories.find(category => category.id === normalizedId)?.name || 'カテゴリなし'
 }
 
 function normalizeChecklistItem(item) {
@@ -1387,10 +1416,11 @@ function sortedNotesForDisplay(notes) {
 
 function knownNoteCategoryIdForData(categoryId, categories = null) {
   const normalizedId = normalizeNoteCategoryId(categoryId)
+  if (!normalizedId) return null
   if (!Array.isArray(categories)) return normalizedId
 
   const ids = new Set(normalizeNoteCategories(categories).map(category => category.id))
-  return ids.has(normalizedId) ? normalizedId : UNCATEGORIZED_NOTE_CATEGORY_ID
+  return ids.has(normalizedId) && normalizedId !== ALL_NOTE_CATEGORY_ID ? normalizedId : null
 }
 
 function normalizePcNotes(notes, categories = null) {
@@ -1414,7 +1444,7 @@ function savePcNotes(notes) {
   localStorage.setItem(PC_NOTES_STORAGE_KEY, JSON.stringify(normalizePcNotes(notes)))
 }
 
-function createPcNoteDraft(categoryId = UNCATEGORIZED_NOTE_CATEGORY_ID) {
+function createPcNoteDraft(categoryId = null) {
   return {
     content: '',
     color: NOTE_DEFAULT_COLOR,
@@ -2100,7 +2130,6 @@ export default function App() {
   const [pcNoteSearch, setPcNoteSearch] = useState('')
   const [selectedNoteCategoryId, setSelectedNoteCategoryId] = useState(ALL_NOTE_CATEGORY_ID)
   const [newNoteCategoryName, setNewNoteCategoryName] = useState('')
-  const [isMobileNoteCategoryDrawerOpen, setIsMobileNoteCategoryDrawerOpen] = useState(false)
   const [noteToastMessage, setNoteToastMessage] = useState('')
   const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
@@ -2925,17 +2954,16 @@ export default function App() {
   const effectiveSelectedNoteCategoryId = selectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
     || noteCategories.some(category => category.id === selectedNoteCategoryId)
     ? selectedNoteCategoryId
-    : UNCATEGORIZED_NOTE_CATEGORY_ID
-  const activeNoteCategoryName = noteCategoryName(noteCategories, effectiveSelectedNoteCategoryId)
+    : ALL_NOTE_CATEGORY_ID
   const filteredPcNotes = useMemo(() => {
     const query = pcNoteSearch.trim().toLowerCase()
     const categoryFilteredNotes = effectiveSelectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
       ? pcNotes
       : pcNotes.filter(note => {
           const noteCategoryId = normalizeNoteCategoryId(note.categoryId)
-          const knownCategoryId = noteCategoryIds.has(noteCategoryId)
+          const knownCategoryId = noteCategoryId && noteCategoryIds.has(noteCategoryId)
             ? noteCategoryId
-            : UNCATEGORIZED_NOTE_CATEGORY_ID
+            : null
           return knownCategoryId === effectiveSelectedNoteCategoryId
         })
 
@@ -4026,12 +4054,14 @@ export default function App() {
 
   function normalizeKnownNoteCategoryId(categoryId) {
     const normalizedId = normalizeNoteCategoryId(categoryId)
-    return noteCategoryIds.has(normalizedId) ? normalizedId : UNCATEGORIZED_NOTE_CATEGORY_ID
+    return normalizedId && noteCategoryIds.has(normalizedId) && normalizedId !== ALL_NOTE_CATEGORY_ID
+      ? normalizedId
+      : null
   }
 
   function defaultPcNoteCategoryForSelection() {
     return effectiveSelectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
-      ? UNCATEGORIZED_NOTE_CATEGORY_ID
+      ? null
       : effectiveSelectedNoteCategoryId
   }
 
@@ -4054,14 +4084,13 @@ export default function App() {
       : normalizeNoteCategoryId(categoryId)
 
     setSelectedNoteCategoryId(nextCategoryId)
-    setIsMobileNoteCategoryDrawerOpen(false)
     setPcNoteSearch('')
 
     if (isPcNoteDraftEmpty(pcNoteDraft)) {
       setPcNoteDraft(prev => ({
         ...prev,
         categoryId: nextCategoryId === ALL_NOTE_CATEGORY_ID
-          ? UNCATEGORIZED_NOTE_CATEGORY_ID
+          ? null
           : nextCategoryId
       }))
     }
@@ -4088,7 +4117,6 @@ export default function App() {
     setSelectedNoteCategoryId(nextCategory.id)
     setPcNoteDraft(prev => ({ ...prev, categoryId: nextCategory.id }))
     setNewNoteCategoryName('')
-    setIsMobileNoteCategoryDrawerOpen(false)
   }
 
   function deleteNoteCategory(categoryId) {
@@ -4096,21 +4124,21 @@ export default function App() {
 
     const category = noteCategories.find(item => item.id === categoryId)
     if (!category) return
-    if (!window.confirm(`「${category.name}」カテゴリを削除しますか？このカテゴリのメモは未分類に移動します。`)) return
+    if (!window.confirm(`「${category.name}」カテゴリを削除しますか？このカテゴリのメモはカテゴリなしに移動します。`)) return
 
     saveUndoSnapshot()
     setNoteCategories(prev => prev.filter(item => item.id !== categoryId))
     setPcNotes(prev => normalizePcNotes(prev.map(note => (
       normalizeNoteCategoryId(note.categoryId) === categoryId
-        ? { ...note, categoryId: UNCATEGORIZED_NOTE_CATEGORY_ID, updatedAt: new Date().toISOString() }
+        ? { ...note, categoryId: null, updatedAt: new Date().toISOString() }
         : note
     ))))
     if (selectedNoteCategoryId === categoryId) {
-      setSelectedNoteCategoryId(UNCATEGORIZED_NOTE_CATEGORY_ID)
+      setSelectedNoteCategoryId(ALL_NOTE_CATEGORY_ID)
     }
     setPcNoteDraft(prev => (
       normalizeNoteCategoryId(prev.categoryId) === categoryId
-        ? { ...prev, categoryId: UNCATEGORIZED_NOTE_CATEGORY_ID }
+        ? { ...prev, categoryId: null }
         : prev
     ))
     setOpenNoteCategoryMenuId(null)
@@ -5569,16 +5597,20 @@ export default function App() {
                 </button>
                 {isMoveMenuOpen && (
                   <div className="pc-note-move-category-panel">
-                    {noteCategoryOptions.map(category => (
-                      <button
-                        type="button"
-                        key={category.id}
-                        className={normalizeKnownNoteCategoryId(note.categoryId) === category.id ? 'selected' : ''}
-                        onClick={() => movePcNoteToCategory(note.id, category.id)}
-                      >
-                        {category.name}
-                      </button>
-                    ))}
+                    {noteCategoryOptions.length === 0 ? (
+                      <p>移動できるカテゴリがありません</p>
+                    ) : (
+                      noteCategoryOptions.map(category => (
+                        <button
+                          type="button"
+                          key={category.id}
+                          className={normalizeKnownNoteCategoryId(note.categoryId) === category.id ? 'selected' : ''}
+                          onClick={() => movePcNoteToCategory(note.id, category.id)}
+                        >
+                          {category.name}
+                        </button>
+                      ))
+                    )}
                   </div>
                 )}
                 <div className="pc-note-card-menu-separator" />
@@ -5607,34 +5639,6 @@ export default function App() {
 
     return (
       <section className={isMobileNotes ? 'pc-notes-shell mobile-notes-shell' : 'pc-notes-shell'}>
-        {isMobileNotes && (
-          <>
-            <div className="mobile-note-category-bar">
-              <button
-                type="button"
-                className="mobile-note-category-button"
-                onClick={() => setIsMobileNoteCategoryDrawerOpen(true)}
-              >
-                カテゴリ
-              </button>
-              <span>{activeNoteCategoryName}</span>
-            </div>
-            {isMobileNoteCategoryDrawerOpen && (
-              <div
-                className="mobile-note-category-backdrop"
-                role="presentation"
-                onClick={() => setIsMobileNoteCategoryDrawerOpen(false)}
-              >
-                <div
-                  className="mobile-note-category-drawer"
-                  onClick={e => e.stopPropagation()}
-                >
-                  {renderNoteCategorySidebar('mobile')}
-                </div>
-              </div>
-            )}
-          </>
-        )}
         {isNoteSearchMode ? (
           <div className="pc-note-entry-bar search-mode">
             <input
@@ -5707,6 +5711,18 @@ export default function App() {
                 >
                   <span className="pc-note-search-icon" aria-hidden="true" />
                 </button>
+                <button
+                  type="button"
+                  className={`pc-note-checklist-toggle-button ${pcNoteDraft.type === 'checklist' ? 'active' : ''}`}
+                  onClick={() => convertNoteDraftType(
+                    setPcNoteDraft,
+                    pcNoteDraft.type === 'checklist' ? 'text' : 'checklist'
+                  )}
+                  aria-label={pcNoteDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+                  title={pcNoteDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+                >
+                  <span className="pc-note-checklist-icon" aria-hidden="true" />
+                </button>
                 {isNoteColorPaletteOpen && (
                   <div className="pc-note-color-panel" aria-label="背景色を選択">
                     {NOTE_COLOR_OPTIONS.map(option => (
@@ -5727,29 +5743,23 @@ export default function App() {
                 )}
                 {isNoteCategoryPickerOpen && (
                   <div className="pc-note-category-picker-panel" aria-label="保存先カテゴリを選択">
-                    {noteCategoryOptions.map(category => (
-                      <button
-                        type="button"
-                        key={category.id}
-                        className={normalizeKnownNoteCategoryId(pcNoteDraft.categoryId || defaultPcNoteCategoryForSelection()) === category.id ? 'selected' : ''}
-                        onClick={() => selectPcNoteDraftCategory(category.id)}
-                      >
-                        {category.name}
-                      </button>
-                    ))}
+                    {noteCategoryOptions.length === 0 ? (
+                      <p>カテゴリなし</p>
+                    ) : (
+                      noteCategoryOptions.map(category => (
+                        <button
+                          type="button"
+                          key={category.id}
+                          className={normalizeKnownNoteCategoryId(pcNoteDraft.categoryId || defaultPcNoteCategoryForSelection()) === category.id ? 'selected' : ''}
+                          onClick={() => selectPcNoteDraftCategory(category.id)}
+                        >
+                          {category.name}
+                        </button>
+                      ))
+                    )}
                   </div>
                 )}
               </div>
-              <button
-                type="button"
-                className="pc-note-type-toggle-button"
-                onClick={() => convertNoteDraftType(
-                  setPcNoteDraft,
-                  pcNoteDraft.type === 'checklist' ? 'text' : 'checklist'
-                )}
-              >
-                {pcNoteDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
-              </button>
               <div className="pc-note-action-buttons">
                 <button type="button" className="pc-note-close-button" onClick={closePcNoteComposer}>
                   閉じる
@@ -6840,23 +6850,26 @@ export default function App() {
                     ))}
                   </div>
                 )}
+                <button
+                  type="button"
+                  className={`pc-note-checklist-toggle-button ${pcNoteEditDraft.type === 'checklist' ? 'active' : ''}`}
+                  onClick={() => convertNoteDraftType(
+                    setPcNoteEditDraft,
+                    pcNoteEditDraft.type === 'checklist' ? 'text' : 'checklist'
+                  )}
+                  aria-label={pcNoteEditDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+                  title={pcNoteEditDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
+                >
+                  <span className="pc-note-checklist-icon" aria-hidden="true" />
+                </button>
               </div>
-              <button
-                type="button"
-                className="pc-note-type-toggle-button"
-                onClick={() => convertNoteDraftType(
-                  setPcNoteEditDraft,
-                  pcNoteEditDraft.type === 'checklist' ? 'text' : 'checklist'
-                )}
-              >
-                {pcNoteEditDraft.type === 'checklist' ? '通常メモにする' : 'チェックリストにする'}
-              </button>
               <label className="pc-note-category-field">
                 <span>カテゴリ</span>
                 <select
-                  value={normalizeKnownNoteCategoryId(pcNoteEditDraft.categoryId)}
-                  onChange={e => setPcNoteEditDraft(prev => ({ ...prev, categoryId: e.target.value }))}
+                  value={normalizeKnownNoteCategoryId(pcNoteEditDraft.categoryId) || ''}
+                  onChange={e => setPcNoteEditDraft(prev => ({ ...prev, categoryId: e.target.value || null }))}
                 >
+                  <option value="">カテゴリなし</option>
                   {noteCategoryOptions.map(category => (
                     <option key={category.id} value={category.id}>{category.name}</option>
                   ))}
