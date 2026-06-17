@@ -5,6 +5,7 @@ const EVENT_STORAGE_KEY = 'wdp_events_v1'
 const TASK_STORAGE_KEY = 'wdp_tasks_v1'
 const MEMO_STORAGE_KEY = 'wdp_memos_v1'
 const PC_NOTES_STORAGE_KEY = 'wdp_pc_notes_v1'
+const NOTE_CATEGORY_STORAGE_KEY = 'wdp_note_categories_v1'
 const LOCAL_SYNC_META_STORAGE_KEY = 'wdp_local_sync_meta_v1'
 const GOOGLE_CONNECTED_STORAGE_KEY = 'wdp_google_connected_v1'
 const UNDATED_TASK_DATE = '__undated__'
@@ -129,6 +130,19 @@ const PLANNER_SLOT_HOURS = Array.from(
   (_, i) => PLANNER_START_HOUR + i
 )
 const MONDAY_WEEKDAY_LABELS = ['月', '火', '水', '木', '金', '土', '日']
+const ALL_NOTE_CATEGORY_ID = 'all'
+const UNCATEGORIZED_NOTE_CATEGORY_ID = 'uncategorized'
+const DEFAULT_NOTE_CATEGORIES = [
+  { id: ALL_NOTE_CATEGORY_ID, name: 'すべて' },
+  { id: UNCATEGORIZED_NOTE_CATEGORY_ID, name: '未分類' },
+  { id: 'editing', name: '編集チェック' },
+  { id: 'task', name: 'タスク管理' },
+  { id: 'idea', name: 'アイデア' },
+  { id: 'video-editing', name: '動画編集' },
+  { id: 'work', name: '仕事' },
+  { id: 'study', name: '学業' }
+]
+const DEFAULT_NOTE_CATEGORY_IDS = new Set(DEFAULT_NOTE_CATEGORIES.map(category => category.id))
 const NOTE_DEFAULT_COLOR = '#FFFFFF'
 const NOTE_COLOR_OPTIONS = [
   { id: 'white', label: '白', color: '#FFFFFF', textColor: '#0f172a', mutedColor: '#334155' },
@@ -1149,6 +1163,71 @@ function defaultMemos() {
   }
 }
 
+function normalizeNoteCategoryId(categoryId) {
+  const normalizedId = String(categoryId || '').trim()
+  if (!normalizedId || normalizedId === ALL_NOTE_CATEGORY_ID) return UNCATEGORIZED_NOTE_CATEGORY_ID
+  return normalizedId
+}
+
+function normalizeNoteCategoryName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ')
+}
+
+function appendNormalizedNoteCategory(categories, category) {
+  const id = String(category?.id || '').trim()
+  const name = normalizeNoteCategoryName(category?.name)
+  if (!id || !name) return categories
+
+  const hasSameId = categories.some(item => item.id === id)
+  const hasSameName = categories.some(item => item.name.toLowerCase() === name.toLowerCase())
+  if (hasSameId || hasSameName) return categories
+
+  return [...categories, { id, name }]
+}
+
+function normalizeNoteCategories(categories) {
+  const normalized = DEFAULT_NOTE_CATEGORIES.map(category => ({ ...category }))
+  if (!Array.isArray(categories)) return normalized
+
+  return categories.reduce((nextCategories, category) => (
+    appendNormalizedNoteCategory(nextCategories, category)
+  ), normalized)
+}
+
+function hasCustomNoteCategories(categories) {
+  return normalizeNoteCategories(categories).some(category => !DEFAULT_NOTE_CATEGORY_IDS.has(category.id))
+}
+
+function defaultNoteCategories() {
+  try {
+    const raw = localStorage.getItem(NOTE_CATEGORY_STORAGE_KEY)
+    return normalizeNoteCategories(raw ? JSON.parse(raw) : [])
+  } catch {
+    return normalizeNoteCategories([])
+  }
+}
+
+function saveNoteCategories(categories) {
+  localStorage.setItem(NOTE_CATEGORY_STORAGE_KEY, JSON.stringify(normalizeNoteCategories(categories)))
+}
+
+function createNoteCategoryId(name, categories = []) {
+  const base = normalizeNoteCategoryName(name)
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}]+/gu, '-')
+    .replace(/^-+|-+$/g, '') || 'category'
+  const existingIds = new Set(categories.map(category => category.id))
+  let id = base
+  let suffix = 2
+
+  while (existingIds.has(id)) {
+    id = `${base}-${suffix}`
+    suffix += 1
+  }
+
+  return id
+}
+
 function normalizePcNote(note) {
   if (!note || typeof note !== 'object' || Array.isArray(note)) return null
 
@@ -1166,6 +1245,7 @@ function normalizePcNote(note) {
     id: String(note.id || createLocalId('pc-note')),
     content,
     color,
+    categoryId: normalizeNoteCategoryId(note.categoryId),
     createdAt: String(note.createdAt || timestamp),
     updatedAt: String(note.updatedAt || timestamp)
   }
@@ -1205,6 +1285,13 @@ function noteDisplayParts(note) {
   }
 }
 
+function noteCategoryName(categories, categoryId) {
+  const normalizedId = categoryId === ALL_NOTE_CATEGORY_ID
+    ? ALL_NOTE_CATEGORY_ID
+    : normalizeNoteCategoryId(categoryId)
+  return categories.find(category => category.id === normalizedId)?.name || '未分類'
+}
+
 function normalizePcNotes(notes) {
   if (!Array.isArray(notes)) return []
 
@@ -1226,10 +1313,11 @@ function savePcNotes(notes) {
   localStorage.setItem(PC_NOTES_STORAGE_KEY, JSON.stringify(normalizePcNotes(notes)))
 }
 
-function createPcNoteDraft() {
+function createPcNoteDraft(categoryId = UNCATEGORIZED_NOTE_CATEGORY_ID) {
   return {
     content: '',
-    color: NOTE_DEFAULT_COLOR
+    color: NOTE_DEFAULT_COLOR,
+    categoryId: normalizeNoteCategoryId(categoryId)
   }
 }
 
@@ -1559,11 +1647,15 @@ function plannerSettingsPayload(settings = {}) {
   const rawPcNotes = Object.prototype.hasOwnProperty.call(rawSettings, 'pcNotes')
     ? rawSettings.pcNotes
     : defaultPcNotes()
+  const rawNoteCategories = Object.prototype.hasOwnProperty.call(rawSettings, 'noteCategories')
+    ? rawSettings.noteCategories
+    : defaultNoteCategories()
 
   return {
     recurringTaskRules: recurringTaskSettingsPayload(rawSettings.recurringTaskRules || []),
     recurringTaskExclusions: recurringTaskExclusionsPayload(rawSettings.recurringTaskExclusions || []),
-    pcNotes: normalizePcNotes(rawPcNotes)
+    pcNotes: normalizePcNotes(rawPcNotes),
+    noteCategories: normalizeNoteCategories(rawNoteCategories)
   }
 }
 
@@ -1608,6 +1700,7 @@ function plannerDataHasContent(data) {
     || normalizeRecurringTaskRules(data.settings?.recurringTaskRules).length > 0
     || normalizeRecurringTaskExclusions(data.settings?.recurringTaskExclusions).length > 0
     || normalizePcNotes(data.settings?.pcNotes).length > 0
+    || hasCustomNoteCategories(data.settings?.noteCategories)
 }
 
 function comparableEvents(events) {
@@ -1649,7 +1742,8 @@ function comparableSettings(settings = {}) {
     recurringTaskRules: recurringTaskSettingsPayload(settings.recurringTaskRules || [])
       .sort((a, b) => String(a.id).localeCompare(String(b.id))),
     recurringTaskExclusions: recurringTaskExclusionsPayload(settings.recurringTaskExclusions || []),
-    pcNotes: normalizePcNotes(settings.pcNotes || [])
+    pcNotes: normalizePcNotes(settings.pcNotes || []),
+    noteCategories: normalizeNoteCategories(settings.noteCategories || [])
   }
 }
 
@@ -1769,6 +1863,7 @@ export default function App() {
   const tasksRef = useRef([])
   const memosRef = useRef({})
   const pcNotesRef = useRef([])
+  const noteCategoriesRef = useRef([])
   const dragUpdatedEventRef = useRef(null)
   const pendingGoogleInsertIdsRef = useRef(new Set())
   const updateGoogleEventRef = useRef(null)
@@ -1832,12 +1927,13 @@ export default function App() {
   const [recurringTaskRules, setRecurringTaskRules] = useState(() => defaultRecurringTaskRules())
   const [recurringTaskExclusions, setRecurringTaskExclusions] = useState(() => defaultRecurringTaskExclusions())
   const [pcNotes, setPcNotes] = useState(() => defaultPcNotes())
+  const [noteCategories, setNoteCategories] = useState(() => defaultNoteCategories())
   if (initialPlannerDataRef.current == null) {
     initialPlannerDataRef.current = {
       events,
       tasks,
       memos,
-      settings: plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes })
+      settings: plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes, noteCategories })
     }
   }
   const [, setUndoStack] = useState([])
@@ -1897,6 +1993,9 @@ export default function App() {
   const [isRecurringTaskModalOpen, setIsRecurringTaskModalOpen] = useState(false)
   const [recurringTaskDraft, setRecurringTaskDraft] = useState(() => createRecurringTaskDraft())
   const [pcNoteSearch, setPcNoteSearch] = useState('')
+  const [selectedNoteCategoryId, setSelectedNoteCategoryId] = useState(ALL_NOTE_CATEGORY_ID)
+  const [newNoteCategoryName, setNewNoteCategoryName] = useState('')
+  const [isMobileNoteCategoryDrawerOpen, setIsMobileNoteCategoryDrawerOpen] = useState(false)
   const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
   const [pcNoteEditMode, setPcNoteEditMode] = useState('pc')
@@ -1994,7 +2093,8 @@ export default function App() {
       settings: plannerSettingsPayload({
         recurringTaskRules: recurringTaskRulesRef.current,
         recurringTaskExclusions: recurringTaskExclusionsRef.current,
-        pcNotes: pcNotesRef.current
+        pcNotes: pcNotesRef.current,
+        noteCategories: noteCategoriesRef.current
       })
     }
   }
@@ -2207,6 +2307,11 @@ export default function App() {
   }, [pcNotes])
 
   useEffect(() => {
+    noteCategoriesRef.current = noteCategories
+    saveNoteCategories(noteCategories)
+  }, [noteCategories])
+
+  useEffect(() => {
     recurringTaskRulesRef.current = recurringTaskRules
     recurringTaskExclusionsRef.current = recurringTaskExclusions
     saveRecurringTaskRules(recurringTaskRules)
@@ -2222,7 +2327,7 @@ export default function App() {
       window.clearTimeout(supabaseSaveTimersRef.current.settings)
     }
 
-    const snapshot = plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes })
+    const snapshot = plannerSettingsPayload({ recurringTaskRules, recurringTaskExclusions, pcNotes, noteCategories })
     supabaseSaveTimersRef.current.settings = window.setTimeout(() => {
       void (async () => {
         supabasePushInFlightRef.current += 1
@@ -2248,7 +2353,7 @@ export default function App() {
       })()
     }, SUPABASE_SAVE_DEBOUNCE_MS)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recurringTaskRules, recurringTaskExclusions, pcNotes, supabaseConfigured])
+  }, [recurringTaskRules, recurringTaskExclusions, pcNotes, noteCategories, supabaseConfigured])
 
   useEffect(() => {
     googleConnectedRef.current = googleConnected
@@ -2285,7 +2390,8 @@ export default function App() {
           settings: plannerSettingsPayload({
             recurringTaskRules: recurringTaskRulesRef.current,
             recurringTaskExclusions: recurringTaskExclusionsRef.current,
-            pcNotes: pcNotesRef.current
+            pcNotes: pcNotesRef.current,
+            noteCategories: noteCategoriesRef.current
           })
         }
 
@@ -2300,12 +2406,14 @@ export default function App() {
           tasksRef.current = hydratedData.tasks
           memosRef.current = hydratedData.memos
           pcNotesRef.current = hydratedData.settings.pcNotes || []
+          noteCategoriesRef.current = hydratedData.settings.noteCategories || normalizeNoteCategories([])
           recurringTaskRulesRef.current = hydratedData.settings.recurringTaskRules || []
           recurringTaskExclusionsRef.current = hydratedData.settings.recurringTaskExclusions || []
           setEvents(hydratedData.events)
           setTasks(hydratedData.tasks)
           setMemos(hydratedData.memos)
           setPcNotes(hydratedData.settings.pcNotes || [])
+          setNoteCategories(hydratedData.settings.noteCategories || normalizeNoteCategories([]))
           setRecurringTaskRules(hydratedData.settings.recurringTaskRules || [])
           setRecurringTaskExclusions(hydratedData.settings.recurringTaskExclusions || [])
           setCloudStatus('connected')
@@ -2385,7 +2493,8 @@ export default function App() {
           settings: plannerSettingsPayload({
             recurringTaskRules: recurringTaskRulesRef.current,
             recurringTaskExclusions: recurringTaskExclusionsRef.current,
-            pcNotes: pcNotesRef.current
+            pcNotes: pcNotesRef.current,
+            noteCategories: noteCategoriesRef.current
           })
         }
 
@@ -2404,12 +2513,14 @@ export default function App() {
         tasksRef.current = remoteData.tasks
         memosRef.current = remoteData.memos
         pcNotesRef.current = remoteData.settings.pcNotes || []
+        noteCategoriesRef.current = remoteData.settings.noteCategories || normalizeNoteCategories([])
         recurringTaskRulesRef.current = remoteData.settings.recurringTaskRules || []
         recurringTaskExclusionsRef.current = remoteData.settings.recurringTaskExclusions || []
         setEvents(remoteData.events)
         setTasks(remoteData.tasks)
         setMemos(remoteData.memos)
         setPcNotes(remoteData.settings.pcNotes || [])
+        setNoteCategories(remoteData.settings.noteCategories || normalizeNoteCategories([]))
         setRecurringTaskRules(remoteData.settings.recurringTaskRules || [])
         setRecurringTaskExclusions(remoteData.settings.recurringTaskExclusions || [])
         setCloudStatus('connected')
@@ -2684,12 +2795,31 @@ export default function App() {
     .map(normalizePlannerEvent)
     .sort((a, b) => minutesFromTime(a.startTime) - minutesFromTime(b.startTime))
   const selectedMobileTasks = sortTasksByOrder(tasks.filter(item => item.date === selectedMobileDate))
+  const noteCategoryOptions = noteCategories.filter(category => category.id !== ALL_NOTE_CATEGORY_ID)
+  const noteCategoryIds = useMemo(() => (
+    new Set(noteCategories.map(category => category.id))
+  ), [noteCategories])
+  const effectiveSelectedNoteCategoryId = selectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
+    || noteCategories.some(category => category.id === selectedNoteCategoryId)
+    ? selectedNoteCategoryId
+    : UNCATEGORIZED_NOTE_CATEGORY_ID
+  const activeNoteCategoryName = noteCategoryName(noteCategories, effectiveSelectedNoteCategoryId)
   const filteredPcNotes = useMemo(() => {
     const query = pcNoteSearch.trim().toLowerCase()
-    if (!query) return pcNotes
+    const categoryFilteredNotes = effectiveSelectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
+      ? pcNotes
+      : pcNotes.filter(note => {
+          const noteCategoryId = normalizeNoteCategoryId(note.categoryId)
+          const knownCategoryId = noteCategoryIds.has(noteCategoryId)
+            ? noteCategoryId
+            : UNCATEGORIZED_NOTE_CATEGORY_ID
+          return knownCategoryId === effectiveSelectedNoteCategoryId
+        })
 
-    return pcNotes.filter(note => String(note.content || '').toLowerCase().includes(query))
-  }, [pcNoteSearch, pcNotes])
+    if (!query) return categoryFilteredNotes
+
+    return categoryFilteredNotes.filter(note => String(note.content || '').toLowerCase().includes(query))
+  }, [effectiveSelectedNoteCategoryId, noteCategoryIds, pcNoteSearch, pcNotes])
   const mobileDragRange = mobileDragSelection
     ? eventRangeFromSelection(mobileDragSelection.anchorMinutes, mobileDragSelection.currentMinutes)
     : null
@@ -2802,6 +2932,8 @@ export default function App() {
       events: cloneUndoData(events),
       tasks: cloneUndoData(tasks),
       memos: cloneUndoData(memos),
+      pcNotes: cloneUndoData(pcNotes),
+      noteCategories: cloneUndoData(noteCategories),
       recurringTaskRules: cloneUndoData(recurringTaskRules),
       recurringTaskExclusions: cloneUndoData(recurringTaskExclusions),
       centerDateISO: formatISO(centerDate),
@@ -2831,6 +2963,8 @@ export default function App() {
     const restoredEvents = cloneUndoData(snapshot.events)
     const restoredTasks = cloneUndoData(snapshot.tasks)
     const restoredMemos = cloneUndoData(snapshot.memos)
+    const restoredPcNotes = cloneUndoData(snapshot.pcNotes || pcNotes)
+    const restoredNoteCategories = cloneUndoData(snapshot.noteCategories || noteCategories)
     const restoredRecurringTaskRules = cloneUndoData(snapshot.recurringTaskRules || recurringTaskRules)
     const restoredRecurringTaskExclusions = cloneUndoData(snapshot.recurringTaskExclusions || [])
 
@@ -2840,6 +2974,8 @@ export default function App() {
     setEvents(restoredEvents)
     setTasks(restoredTasks)
     setMemos(restoredMemos)
+    setPcNotes(restoredPcNotes)
+    setNoteCategories(restoredNoteCategories)
     setRecurringTaskRules(restoredRecurringTaskRules)
     setRecurringTaskExclusions(restoredRecurringTaskExclusions)
     setCenterDate(startOfWeek(dateFromISO(snapshot.centerDateISO)))
@@ -3761,8 +3897,86 @@ export default function App() {
     setMemos(prev => ({ ...prev, [SHARED_MEMO_KEY]: value }))
   }
 
+  function normalizeKnownNoteCategoryId(categoryId) {
+    const normalizedId = normalizeNoteCategoryId(categoryId)
+    return noteCategoryIds.has(normalizedId) ? normalizedId : UNCATEGORIZED_NOTE_CATEGORY_ID
+  }
+
+  function defaultPcNoteCategoryForSelection() {
+    return effectiveSelectedNoteCategoryId === ALL_NOTE_CATEGORY_ID
+      ? UNCATEGORIZED_NOTE_CATEGORY_ID
+      : effectiveSelectedNoteCategoryId
+  }
+
+  function selectNoteCategory(categoryId) {
+    const nextCategoryId = categoryId === ALL_NOTE_CATEGORY_ID
+      ? ALL_NOTE_CATEGORY_ID
+      : normalizeNoteCategoryId(categoryId)
+
+    setSelectedNoteCategoryId(nextCategoryId)
+    setIsMobileNoteCategoryDrawerOpen(false)
+    setPcNoteSearch('')
+
+    if (!pcNoteDraft.content.trim()) {
+      setPcNoteDraft(prev => ({
+        ...prev,
+        categoryId: nextCategoryId === ALL_NOTE_CATEGORY_ID
+          ? UNCATEGORIZED_NOTE_CATEGORY_ID
+          : nextCategoryId
+      }))
+    }
+  }
+
+  function addNoteCategory(e) {
+    e.preventDefault()
+
+    const name = normalizeNoteCategoryName(newNoteCategoryName)
+    if (!name) return
+
+    const isDuplicate = noteCategories.some(category => (
+      category.name.toLowerCase() === name.toLowerCase()
+    ))
+    if (isDuplicate) return
+
+    const nextCategory = {
+      id: createNoteCategoryId(name, noteCategories),
+      name
+    }
+
+    saveUndoSnapshot()
+    setNoteCategories(prev => normalizeNoteCategories([...prev, nextCategory]))
+    setSelectedNoteCategoryId(nextCategory.id)
+    setPcNoteDraft(prev => ({ ...prev, categoryId: nextCategory.id }))
+    setNewNoteCategoryName('')
+    setIsMobileNoteCategoryDrawerOpen(false)
+  }
+
+  function deleteNoteCategory(categoryId) {
+    if (DEFAULT_NOTE_CATEGORY_IDS.has(categoryId)) return
+
+    const category = noteCategories.find(item => item.id === categoryId)
+    if (!category) return
+    if (!window.confirm(`「${category.name}」カテゴリを削除しますか？このカテゴリのメモは未分類に移動します。`)) return
+
+    saveUndoSnapshot()
+    setNoteCategories(prev => prev.filter(item => item.id !== categoryId))
+    setPcNotes(prev => normalizePcNotes(prev.map(note => (
+      normalizeNoteCategoryId(note.categoryId) === categoryId
+        ? { ...note, categoryId: UNCATEGORIZED_NOTE_CATEGORY_ID, updatedAt: new Date().toISOString() }
+        : note
+    ))))
+    if (selectedNoteCategoryId === categoryId) {
+      setSelectedNoteCategoryId(UNCATEGORIZED_NOTE_CATEGORY_ID)
+    }
+    setPcNoteDraft(prev => (
+      normalizeNoteCategoryId(prev.categoryId) === categoryId
+        ? { ...prev, categoryId: UNCATEGORIZED_NOTE_CATEGORY_ID }
+        : prev
+    ))
+  }
+
   function closePcNoteComposer() {
-    setPcNoteDraft(createPcNoteDraft())
+    setPcNoteDraft(createPcNoteDraft(defaultPcNoteCategoryForSelection()))
     setIsNoteColorPaletteOpen(false)
     pcNoteInputRef.current?.blur()
   }
@@ -3772,7 +3986,8 @@ export default function App() {
     setPcNoteEditMode(mode)
     setPcNoteEditDraft({
       content: note.content || '',
-      color: normalizeNoteColor(note.color)
+      color: normalizeNoteColor(note.color),
+      categoryId: normalizeKnownNoteCategoryId(note.categoryId)
     })
     setIsEditNoteColorPaletteOpen(false)
   }
@@ -3780,7 +3995,7 @@ export default function App() {
   function closePcNoteEditor() {
     setEditingPcNoteId(null)
     setPcNoteEditMode('pc')
-    setPcNoteEditDraft(createPcNoteDraft())
+    setPcNoteEditDraft(createPcNoteDraft(defaultPcNoteCategoryForSelection()))
     setIsEditNoteColorPaletteOpen(false)
     suppressPcNoteBackdropSaveRef.current = false
   }
@@ -3796,17 +4011,19 @@ export default function App() {
     }
 
     const timestamp = new Date().toISOString()
+    saveUndoSnapshot()
     setPcNotes(prev => normalizePcNotes([
       {
         id: createLocalId('pc-note'),
         content,
         color: normalizeNoteColor(pcNoteDraft.color),
+        categoryId: normalizeKnownNoteCategoryId(pcNoteDraft.categoryId || defaultPcNoteCategoryForSelection()),
         createdAt: timestamp,
         updatedAt: timestamp
       },
       ...prev
     ]))
-    setPcNoteDraft(createPcNoteDraft())
+    setPcNoteDraft(createPcNoteDraft(defaultPcNoteCategoryForSelection()))
     setIsNoteColorPaletteOpen(false)
     if (currentView === 'notes') {
       window.requestAnimationFrame(() => pcNoteInputRef.current?.focus())
@@ -3823,9 +4040,16 @@ export default function App() {
     }
 
     const timestamp = new Date().toISOString()
+    saveUndoSnapshot()
     setPcNotes(prev => normalizePcNotes(prev.map(note => (
       note.id === editingPcNoteId
-        ? { ...note, content, color: normalizeNoteColor(pcNoteEditDraft.color), updatedAt: timestamp }
+        ? {
+            ...note,
+            content,
+            color: normalizeNoteColor(pcNoteEditDraft.color),
+            categoryId: normalizeKnownNoteCategoryId(pcNoteEditDraft.categoryId),
+            updatedAt: timestamp
+          }
         : note
     ))))
     closePcNoteEditor()
@@ -3869,6 +4093,7 @@ export default function App() {
   }
 
   function deletePcNote(id) {
+    saveUndoSnapshot()
     setPcNotes(prev => prev.filter(note => note.id !== id))
     setOpenNoteCardPaletteId(prev => (prev === id ? null : prev))
     setOpenNoteCardMenuId(prev => (prev === id ? null : prev))
@@ -3881,6 +4106,7 @@ export default function App() {
     const normalizedColor = normalizeNoteColor(color)
     const timestamp = new Date().toISOString()
 
+    saveUndoSnapshot()
     setPcNotes(prev => normalizePcNotes(prev.map(note => (
       note.id === id
         ? { ...note, color: normalizedColor, updatedAt: timestamp }
@@ -4773,6 +4999,62 @@ export default function App() {
     }
   }
 
+  function renderNoteCategorySidebar(mode = 'pc') {
+    const isMobileCategoryMenu = mode === 'mobile'
+
+    return (
+      <aside className={isMobileCategoryMenu ? 'note-category-sidebar mobile' : 'note-category-sidebar'}>
+        <div className="note-category-sidebar-title">カテゴリ</div>
+        <div className="note-category-list">
+          {noteCategories.map(category => {
+            const isSelected = effectiveSelectedNoteCategoryId === category.id
+            const canDelete = !DEFAULT_NOTE_CATEGORY_IDS.has(category.id)
+
+            return (
+              <div
+                key={category.id}
+                className={`note-category-row ${isSelected ? 'selected' : ''}`}
+              >
+                <button
+                  type="button"
+                  className="note-category-button"
+                  onClick={() => selectNoteCategory(category.id)}
+                  aria-current={isSelected ? 'true' : undefined}
+                >
+                  {category.name}
+                </button>
+                {canDelete && (
+                  <button
+                    type="button"
+                    className="note-category-delete"
+                    onClick={e => {
+                      e.stopPropagation()
+                      deleteNoteCategory(category.id)
+                    }}
+                    aria-label={`${category.name}を削除`}
+                    title="カテゴリ削除"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+        <form className="note-category-add-form" onSubmit={addNoteCategory}>
+          <input
+            type="text"
+            value={newNoteCategoryName}
+            onChange={e => setNewNoteCategoryName(e.target.value)}
+            placeholder="カテゴリ名"
+            aria-label="カテゴリ名"
+          />
+          <button type="submit">＋ カテゴリ追加</button>
+        </form>
+      </aside>
+    )
+  }
+
   function renderNotesWorkspace(mode = 'pc') {
     const isMobileNotes = mode === 'mobile'
     const emptyText = pcNoteSearch.trim()
@@ -4782,6 +5064,34 @@ export default function App() {
 
     return (
       <section className={isMobileNotes ? 'pc-notes-shell mobile-notes-shell' : 'pc-notes-shell'}>
+        {isMobileNotes && (
+          <>
+            <div className="mobile-note-category-bar">
+              <button
+                type="button"
+                className="mobile-note-category-button"
+                onClick={() => setIsMobileNoteCategoryDrawerOpen(true)}
+              >
+                カテゴリ
+              </button>
+              <span>{activeNoteCategoryName}</span>
+            </div>
+            {isMobileNoteCategoryDrawerOpen && (
+              <div
+                className="mobile-note-category-backdrop"
+                role="presentation"
+                onClick={() => setIsMobileNoteCategoryDrawerOpen(false)}
+              >
+                <div
+                  className="mobile-note-category-drawer"
+                  onClick={e => e.stopPropagation()}
+                >
+                  {renderNoteCategorySidebar('mobile')}
+                </div>
+              </div>
+            )}
+          </>
+        )}
         {isNoteSearchMode ? (
           <div className="pc-note-entry-bar search-mode">
             <input
@@ -4854,6 +5164,17 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <label className="pc-note-category-field">
+                <span>カテゴリ</span>
+                <select
+                  value={normalizeKnownNoteCategoryId(pcNoteDraft.categoryId || defaultPcNoteCategoryForSelection())}
+                  onChange={e => setPcNoteDraft(prev => ({ ...prev, categoryId: e.target.value }))}
+                >
+                  {noteCategoryOptions.map(category => (
+                    <option key={category.id} value={category.id}>{category.name}</option>
+                  ))}
+                </select>
+              </label>
               <div className="pc-note-action-buttons">
                 <button type="button" className="pc-note-close-button" onClick={closePcNoteComposer}>
                   閉じる
@@ -5300,7 +5621,7 @@ export default function App() {
           <section className="mobile-section mobile-memo-page">
             <div className="mobile-section-heading">
               <h2>メモ</h2>
-              <span>{pcNotes.length}件</span>
+              <span>{filteredPcNotes.length}件</span>
             </div>
             {renderNotesWorkspace('mobile')}
           </section>
@@ -5709,7 +6030,10 @@ export default function App() {
       </main>
       ) : currentView === 'notes' ? (
       <main className="pc-notes-view">
-        {renderNotesWorkspace('pc')}
+        <div className="pc-notes-layout">
+          {renderNoteCategorySidebar('pc')}
+          {renderNotesWorkspace('pc')}
+        </div>
       </main>
       ) : (
       <main className="month-view">
@@ -5990,6 +6314,17 @@ export default function App() {
                   </div>
                 )}
               </div>
+              <label className="pc-note-category-field">
+                <span>カテゴリ</span>
+                <select
+                  value={normalizeKnownNoteCategoryId(pcNoteEditDraft.categoryId)}
+                  onChange={e => setPcNoteEditDraft(prev => ({ ...prev, categoryId: e.target.value }))}
+                >
+                  {noteCategoryOptions.map(category => (
+                    <option key={category.id} value={category.id}>{category.name}</option>
+                  ))}
+                </select>
+              </label>
               <div className="pc-note-action-buttons">
                 <button type="button" className="pc-note-delete-button" onClick={() => deletePcNote(editingPcNoteId)}>
                   削除
