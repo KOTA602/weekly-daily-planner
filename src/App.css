@@ -1982,6 +1982,7 @@
 .pc-notes-masonry {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  grid-auto-flow: row;
   align-items: start;
   gap: 14px;
 }
@@ -2001,7 +2002,16 @@
   color: var(--note-fg);
   cursor: pointer;
   padding: 34px 14px 44px;
-  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+  touch-action: manipulation;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+  width: 100%;
+}
+.pc-note-card.dragging {
+  opacity: 0.48;
+  transform: scale(0.985);
+}
+.pc-note-card.drag-over {
+  box-shadow: inset 0 3px 0 #2563eb, 0 4px 14px rgba(37, 99, 235, 0.16);
 }
 .pc-note-card.pinned {
   border-color: rgba(37, 99, 235, 0.28);
@@ -2255,6 +2265,22 @@
 }
 .pc-note-card-menu button.danger:hover {
   background: rgba(225, 29, 72, 0.1);
+}
+.pc-note-drop-end {
+  position: relative;
+  grid-column: 1 / -1;
+  min-height: 16px;
+  border-radius: 999px;
+}
+.pc-note-drop-end.drag-over::before {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 7px;
+  height: 3px;
+  border-radius: 999px;
+  background: #2563eb;
+  content: "";
 }
 .pc-note-card-menu-separator {
   height: 1px;
@@ -3841,17 +3867,15 @@
   max-width: calc(100vw - 48px);
 }
 .mobile-memo-page .pc-notes-masonry {
-  display: block;
-  column-count: 2;
-  column-gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
   overflow: visible;
   padding-bottom: 16px;
 }
 .mobile-memo-page .pc-note-card {
-  display: inline-flex;
+  display: flex;
   width: 100%;
-  margin: 0 0 10px;
-  break-inside: avoid;
   border-color: rgba(15, 23, 42, 0.14);
   border-radius: 10px;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
@@ -4424,5 +4448,10 @@
   .month-main {
     height: auto;
     min-height: 680px;
+  }
+}
+@media (max-width: 380px) {
+  .mobile-memo-page .pc-notes-masonry {
+    grid-template-columns: 1fr;
   }
 }

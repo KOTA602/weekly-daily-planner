@@ -1257,7 +1257,7 @@ function createNoteCategoryId(name, categories = []) {
   return id
 }
 
-function normalizePcNote(note, categories = null) {
+function normalizePcNote(note, categories = null, fallbackOrder = 0) {
   if (!note || typeof note !== 'object' || Array.isArray(note)) return null
 
   const legacyTitle = String(note.title ?? '').trim()
@@ -1273,6 +1273,7 @@ function normalizePcNote(note, categories = null) {
 
   const timestamp = new Date().toISOString()
   const noteParts = noteDisplayParts({ content })
+  const numericOrder = Number(note.order)
 
   return {
     id: String(note.id || createLocalId('pc-note')),
@@ -1284,6 +1285,7 @@ function normalizePcNote(note, categories = null) {
     type,
     checklistItems,
     isPinned: Boolean(note.isPinned),
+    order: Number.isFinite(numericOrder) ? numericOrder : fallbackOrder,
     createdAt: String(note.createdAt || timestamp),
     updatedAt: String(note.updatedAt || timestamp)
   }
@@ -1410,6 +1412,9 @@ function sortedNotesForDisplay(notes) {
     if (Boolean(a.note.isPinned) !== Boolean(b.note.isPinned)) {
       return a.note.isPinned ? -1 : 1
     }
+    if (Number(a.note.order) !== Number(b.note.order)) {
+      return Number(a.note.order) - Number(b.note.order)
+    }
     return a.index - b.index
   }).map(item => item.note)
 }
@@ -1427,7 +1432,7 @@ function normalizePcNotes(notes, categories = null) {
   if (!Array.isArray(notes)) return []
 
   return notes
-    .map(note => normalizePcNote(note, categories))
+    .map((note, index) => normalizePcNote(note, categories, index * 1000))
     .filter(Boolean)
 }
 
@@ -2050,6 +2055,9 @@ export default function App() {
   const pcNoteEditPaletteRef = useRef(null)
   const pcNoteModalRef = useRef(null)
   const suppressPcNoteBackdropSaveRef = useRef(false)
+  const noteLongPressTimerRef = useRef(null)
+  const notePointerDragRef = useRef(null)
+  const suppressNextNoteClickRef = useRef(false)
   const [centerDate, setCenterDate] = useState(() => {
     const today = startOfWeek(new Date())
     if (today < MIN_WEEK) return MIN_WEEK
@@ -2133,7 +2141,6 @@ export default function App() {
   const [noteToastMessage, setNoteToastMessage] = useState('')
   const [isNoteSearchMode, setIsNoteSearchMode] = useState(false)
   const [editingPcNoteId, setEditingPcNoteId] = useState(null)
-  const [pcNoteEditMode, setPcNoteEditMode] = useState('pc')
   const [pcNoteDraft, setPcNoteDraft] = useState(() => createPcNoteDraft())
   const [pcNoteEditDraft, setPcNoteEditDraft] = useState(() => createPcNoteDraft())
   const [isNoteColorPaletteOpen, setIsNoteColorPaletteOpen] = useState(false)
@@ -2143,6 +2150,9 @@ export default function App() {
   const [openNoteCardMenuId, setOpenNoteCardMenuId] = useState(null)
   const [openNoteCardMoveMenuId, setOpenNoteCardMoveMenuId] = useState(null)
   const [openNoteCategoryMenuId, setOpenNoteCategoryMenuId] = useState(null)
+  const [draggedPcNoteId, setDraggedPcNoteId] = useState(null)
+  const [dragOverPcNoteId, setDragOverPcNoteId] = useState(null)
+  const [dragOverPcNoteEndGroup, setDragOverPcNoteEndGroup] = useState(null)
   const [isMobileDragScrollLocked, setIsMobileDragScrollLocked] = useState(false)
   const [isEventModalOpen, setIsEventModalOpen] = useState(false)
   const [editingEventId, setEditingEventId] = useState(null)
@@ -4193,6 +4203,186 @@ export default function App() {
     ))))
   }
 
+  function nextPcNoteOrder() {
+    if (pcNotes.length === 0) return 0
+    return Math.min(...pcNotes.map(note => Number(note.order) || 0)) - 1000
+  }
+
+  function pcNoteGroupNotes(groupKey) {
+    if (groupKey === 'pinned') return pinnedPcNotes
+    if (groupKey === 'unpinned') return unpinnedPcNotes
+    return filteredPcNotes
+  }
+
+  function clearPcNoteDragState() {
+    setDraggedPcNoteId(null)
+    setDragOverPcNoteId(null)
+    setDragOverPcNoteEndGroup(null)
+    if (noteLongPressTimerRef.current) {
+      window.clearTimeout(noteLongPressTimerRef.current)
+      noteLongPressTimerRef.current = null
+    }
+    notePointerDragRef.current = null
+  }
+
+  function reorderPcNotes(draggedId, targetId, groupKey = 'all') {
+    if (!draggedId) return
+
+    const groupNotes = pcNoteGroupNotes(groupKey)
+    const draggedNote = groupNotes.find(note => note.id === draggedId)
+    if (!draggedNote) return
+
+    const withoutDragged = groupNotes.filter(note => note.id !== draggedId)
+    const targetIndex = targetId
+      ? withoutDragged.findIndex(note => note.id === targetId)
+      : withoutDragged.length
+    const insertIndex = targetIndex >= 0 ? targetIndex : withoutDragged.length
+    const reorderedGroup = [
+      ...withoutDragged.slice(0, insertIndex),
+      draggedNote,
+      ...withoutDragged.slice(insertIndex)
+    ]
+
+    saveUndoSnapshot()
+    setPcNotes(prev => normalizePcNotes(prev.map(note => {
+      const nextIndex = reorderedGroup.findIndex(item => item.id === note.id)
+      return nextIndex >= 0
+        ? { ...note, order: (nextIndex + 1) * 1000 }
+        : note
+    }), noteCategories))
+  }
+
+  function startPcNoteDrag(e, noteId) {
+    if (e.target.closest?.('.pc-note-card-control-zone')) {
+      e.preventDefault()
+      return
+    }
+    e.stopPropagation()
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', noteId)
+    e.dataTransfer.setData('noteId', noteId)
+    setDraggedPcNoteId(noteId)
+    setDragOverPcNoteId(null)
+    setDragOverPcNoteEndGroup(null)
+  }
+
+  function markPcNoteDragOver(e, noteId) {
+    if (!draggedPcNoteId || draggedPcNoteId === noteId) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverPcNoteEndGroup(null)
+    setDragOverPcNoteId(noteId)
+  }
+
+  function dropPcNoteBefore(e, targetId, groupKey) {
+    e.preventDefault()
+    e.stopPropagation()
+    const draggedId = e.dataTransfer.getData('noteId') || e.dataTransfer.getData('text/plain') || draggedPcNoteId
+    reorderPcNotes(draggedId, targetId, groupKey)
+    clearPcNoteDragState()
+  }
+
+  function markPcNoteDragEndOver(e, groupKey) {
+    if (!draggedPcNoteId) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+    setDragOverPcNoteId(null)
+    setDragOverPcNoteEndGroup(groupKey)
+  }
+
+  function dropPcNoteToEnd(e, groupKey) {
+    e.preventDefault()
+    e.stopPropagation()
+    const draggedId = e.dataTransfer.getData('noteId') || e.dataTransfer.getData('text/plain') || draggedPcNoteId
+    reorderPcNotes(draggedId, null, groupKey)
+    clearPcNoteDragState()
+  }
+
+  function startPcNotePointerDrag(e, noteId, groupKey) {
+    if (e.pointerType === 'mouse') return
+    if (e.target.closest?.('.pc-note-card-control-zone')) return
+
+    const startX = e.clientX
+    const startY = e.clientY
+    notePointerDragRef.current = {
+      noteId,
+      groupKey,
+      startX,
+      startY,
+      active: false
+    }
+
+    noteLongPressTimerRef.current = window.setTimeout(() => {
+      const state = notePointerDragRef.current
+      if (!state || state.noteId !== noteId) return
+      state.active = true
+      suppressNextNoteClickRef.current = true
+      setDraggedPcNoteId(noteId)
+      setDragOverPcNoteId(null)
+      setDragOverPcNoteEndGroup(null)
+    }, 360)
+
+    function handlePointerMove(moveEvent) {
+      const state = notePointerDragRef.current
+      if (!state || state.noteId !== noteId) return
+
+      const movedDistance = Math.hypot(moveEvent.clientX - state.startX, moveEvent.clientY - state.startY)
+      if (!state.active && movedDistance > 10) {
+        clearPcNoteDragState()
+        document.removeEventListener('pointermove', handlePointerMove, true)
+        document.removeEventListener('pointerup', handlePointerUp, true)
+        document.removeEventListener('pointercancel', handlePointerUp, true)
+        return
+      }
+
+      if (!state.active) return
+      moveEvent.preventDefault()
+      const hovered = document.elementFromPoint(moveEvent.clientX, moveEvent.clientY)
+      const targetCard = hovered?.closest?.('[data-pc-note-id]')
+      const targetEnd = hovered?.closest?.('[data-pc-note-drop-end-group]')
+
+      if (targetCard && targetCard.dataset.pcNoteId !== state.noteId) {
+        setDragOverPcNoteId(targetCard.dataset.pcNoteId)
+        setDragOverPcNoteEndGroup(null)
+      } else if (targetEnd) {
+        setDragOverPcNoteId(null)
+        setDragOverPcNoteEndGroup(targetEnd.dataset.pcNoteDropEndGroup)
+      }
+    }
+
+    function handlePointerUp(upEvent) {
+      const state = notePointerDragRef.current
+      document.removeEventListener('pointermove', handlePointerMove, true)
+      document.removeEventListener('pointerup', handlePointerUp, true)
+      document.removeEventListener('pointercancel', handlePointerUp, true)
+      if (noteLongPressTimerRef.current) {
+        window.clearTimeout(noteLongPressTimerRef.current)
+        noteLongPressTimerRef.current = null
+      }
+
+      if (!state?.active) {
+        notePointerDragRef.current = null
+        return
+      }
+
+      upEvent.preventDefault()
+      const hovered = document.elementFromPoint(upEvent.clientX, upEvent.clientY)
+      const targetCard = hovered?.closest?.('[data-pc-note-id]')
+      const targetEnd = hovered?.closest?.('[data-pc-note-drop-end-group]')
+      const targetId = targetCard?.dataset.pcNoteId && targetCard.dataset.pcNoteId !== state.noteId
+        ? targetCard.dataset.pcNoteId
+        : null
+      const targetGroup = targetEnd?.dataset.pcNoteDropEndGroup || targetCard?.dataset.pcNoteGroup || state.groupKey
+
+      reorderPcNotes(state.noteId, targetId, targetId ? targetGroup : (targetEnd?.dataset.pcNoteDropEndGroup || state.groupKey))
+      clearPcNoteDragState()
+    }
+
+    document.addEventListener('pointermove', handlePointerMove, true)
+    document.addEventListener('pointerup', handlePointerUp, true)
+    document.addEventListener('pointercancel', handlePointerUp, true)
+  }
+
   function updateChecklistItemDraft(setDraft, itemId, value) {
     setDraft(prev => ({
       ...prev,
@@ -4312,10 +4502,9 @@ export default function App() {
     pcNoteInputRef.current?.blur()
   }
 
-  function openPcNoteEditor(note, mode = 'pc') {
+  function openPcNoteEditor(note) {
     const checklistItems = normalizeChecklistItems(note.checklistItems)
     setEditingPcNoteId(note.id)
-    setPcNoteEditMode(mode)
     setPcNoteEditDraft({
       content: note.content || '',
       color: normalizeNoteColor(note.color),
@@ -4331,7 +4520,6 @@ export default function App() {
 
   function closePcNoteEditor() {
     setEditingPcNoteId(null)
-    setPcNoteEditMode('pc')
     setPcNoteEditDraft(createPcNoteDraft(defaultPcNoteCategoryForSelection()))
     setIsEditNoteColorPaletteOpen(false)
     suppressPcNoteBackdropSaveRef.current = false
@@ -4362,6 +4550,7 @@ export default function App() {
         type,
         checklistItems,
         isPinned: Boolean(pcNoteDraft.isPinned),
+        order: nextPcNoteOrder(),
         createdAt: timestamp,
         updatedAt: timestamp
       },
@@ -5496,7 +5685,7 @@ export default function App() {
     )
   }
 
-  function renderPcNoteCard(note, mode = 'pc') {
+  function renderPcNoteCard(note, groupKey = 'all') {
     const noteParts = noteDisplayParts(note)
     const isCardPaletteOpen = openNoteCardPaletteId === note.id
     const isCardMenuOpen = openNoteCardMenuId === note.id
@@ -5506,6 +5695,8 @@ export default function App() {
     const cardClassName = [
       'pc-note-card',
       note.isPinned ? 'pinned' : '',
+      draggedPcNoteId === note.id ? 'dragging' : '',
+      dragOverPcNoteId === note.id && draggedPcNoteId !== note.id ? 'drag-over' : '',
       isCardPaletteOpen || isCardMenuOpen ? 'has-card-tools-open' : ''
     ].filter(Boolean).join(' ')
 
@@ -5514,7 +5705,22 @@ export default function App() {
         key={note.id}
         className={cardClassName}
         style={noteColorStyle(note.color)}
-        onClick={() => openPcNoteEditor(note, mode)}
+        draggable
+        data-pc-note-id={note.id}
+        data-pc-note-group={groupKey}
+        onDragStart={e => startPcNoteDrag(e, note.id)}
+        onDragOver={e => markPcNoteDragOver(e, note.id)}
+        onDrop={e => dropPcNoteBefore(e, note.id, groupKey)}
+        onDragEnd={clearPcNoteDragState}
+        onPointerDown={e => startPcNotePointerDrag(e, note.id, groupKey)}
+        onClick={e => {
+          if (suppressNextNoteClickRef.current) {
+            suppressNextNoteClickRef.current = false
+            e.preventDefault()
+            return
+          }
+          openPcNoteEditor(note)
+        }}
       >
         <button
           type="button"
@@ -5630,6 +5836,20 @@ export default function App() {
     )
   }
 
+  function renderPcNoteGrid(notes, groupKey, label) {
+    return (
+      <div className="pc-notes-masonry" aria-label={label}>
+        {notes.map(note => renderPcNoteCard(note, groupKey))}
+        <div
+          className={`pc-note-drop-end ${dragOverPcNoteEndGroup === groupKey ? 'drag-over' : ''}`}
+          data-pc-note-drop-end-group={groupKey}
+          onDragOver={e => markPcNoteDragEndOver(e, groupKey)}
+          onDrop={e => dropPcNoteToEnd(e, groupKey)}
+        />
+      </div>
+    )
+  }
+
   function renderNotesWorkspace(mode = 'pc') {
     const isMobileNotes = mode === 'mobile'
     const emptyText = pcNoteSearch.trim()
@@ -5672,7 +5892,7 @@ export default function App() {
                 className="pc-note-content-input"
                 value={pcNoteDraft.content}
                 onChange={e => setPcNoteDraft(prev => ({ ...prev, content: e.target.value }))}
-                onKeyDown={isMobileNotes ? undefined : handlePcNoteCreateKeyDown}
+                onKeyDown={handlePcNoteCreateKeyDown}
                 placeholder={inputPlaceholder}
               />
             )}
@@ -5778,23 +5998,17 @@ export default function App() {
           <>
             <section className="pc-note-group">
               <h3>ピン留め</h3>
-              <div className="pc-notes-masonry" aria-label="ピン留めメモ一覧">
-                {pinnedPcNotes.map(note => renderPcNoteCard(note, mode))}
-              </div>
+              {renderPcNoteGrid(pinnedPcNotes, 'pinned', 'ピン留めメモ一覧')}
             </section>
             {unpinnedPcNotes.length > 0 && (
               <section className="pc-note-group">
                 <h3>その他</h3>
-                <div className="pc-notes-masonry" aria-label="その他のメモ一覧">
-                  {unpinnedPcNotes.map(note => renderPcNoteCard(note, mode))}
-                </div>
+                {renderPcNoteGrid(unpinnedPcNotes, 'unpinned', 'その他のメモ一覧')}
               </section>
             )}
           </>
         ) : (
-          <div className="pc-notes-masonry" aria-label="メモ一覧">
-            {filteredPcNotes.map(note => renderPcNoteCard(note, mode))}
-          </div>
+          renderPcNoteGrid(filteredPcNotes, 'all', 'メモ一覧')
         )}
         {noteToastMessage && <div className="pc-note-toast">{noteToastMessage}</div>}
       </section>
@@ -6817,7 +7031,7 @@ export default function App() {
                 className="pc-note-content-input"
                 value={pcNoteEditDraft.content}
                 onChange={e => setPcNoteEditDraft(prev => ({ ...prev, content: e.target.value }))}
-                onKeyDown={pcNoteEditMode === 'mobile' ? undefined : handlePcNoteEditKeyDown}
+                onKeyDown={handlePcNoteEditKeyDown}
                 placeholder="メモを入力..."
               />
             )}
