@@ -1980,11 +1980,8 @@
   letter-spacing: 0.08em;
 }
 .pc-notes-masonry {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  grid-auto-flow: row;
-  align-items: start;
-  gap: 14px;
+  column-gap: 14px;
+  columns: 220px;
 }
 .pc-note-card {
   --note-bg: #fff;
@@ -2001,6 +1998,9 @@
   box-sizing: border-box;
   color: var(--note-fg);
   cursor: pointer;
+  display: inline-flex;
+  break-inside: avoid;
+  margin: 0 0 14px;
   padding: 34px 14px 44px;
   touch-action: manipulation;
   transition: box-shadow 0.15s ease, border-color 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
@@ -2268,9 +2268,12 @@
 }
 .pc-note-drop-end {
   position: relative;
-  grid-column: 1 / -1;
+  display: block;
+  break-inside: avoid;
   min-height: 16px;
   border-radius: 999px;
+  margin: 0 0 14px;
+  width: 100%;
 }
 .pc-note-drop-end.drag-over::before {
   position: absolute;
@@ -3867,15 +3870,15 @@
   max-width: calc(100vw - 48px);
 }
 .mobile-memo-page .pc-notes-masonry {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  column-gap: 10px;
+  columns: 2;
   overflow: visible;
   padding-bottom: 16px;
 }
 .mobile-memo-page .pc-note-card {
-  display: flex;
+  display: inline-flex;
   width: 100%;
+  margin: 0 0 10px;
   border-color: rgba(15, 23, 42, 0.14);
   border-radius: 10px;
   box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
@@ -4294,7 +4297,7 @@
     gap: 14px;
   }
   .pc-notes-masonry {
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    columns: 180px;
   }
   .month-toolbar {
     align-items: flex-start;
@@ -4452,6 +4455,6 @@
 }
 @media (max-width: 380px) {
   .mobile-memo-page .pc-notes-masonry {
-    grid-template-columns: 1fr;
+    columns: 1;
   }
 }
